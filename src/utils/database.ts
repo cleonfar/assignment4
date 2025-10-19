@@ -1,6 +1,6 @@
 // This import loads the `.env` file as environment variables
 import "jsr:@std/dotenv/load";
-import { Db, MongoClient } from "npm:mongodb";
+import { Collection, Db, Filter, MongoClient } from "npm:mongodb";
 import { ID } from "@utils/types.ts";
 import { generate } from "jsr:@std/uuid/unstable-v7";
 

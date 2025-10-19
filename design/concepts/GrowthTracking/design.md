@@ -1,0 +1,4 @@
+# Design Changes  
+1. This concept is sort of a combination of two concepts from my original design. In the original design, I had concepts for animal growth records, animal reproductive records, and for data analysis. Originally I had intended to merge the two records concepts into one, but since the data analysis concept would rely on the records from the record keeping concept I didn't see a way to implement the concepts without any knowledge of each other. Eventually I decided to go this route, with concepts for reproduction tracking and growth tracking that both inherited some of the functionality from the dataAnalysis concept.  
+
+2. Other than that fairly large change, nothing else really changed with this concept.

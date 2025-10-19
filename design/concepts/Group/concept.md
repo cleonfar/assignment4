@@ -1,0 +1,39 @@
+# concept HerdGrouping
+* **purpose** organize animals into dynamic groupings for operational and analytical purposes  
+* **principle**  
+  a user creates herds to group animals based on location, purpose, or management strategy, animals may be part of multiple herds;  
+  adds or removes animals from herds as conditions change;  
+  merges herds when combining groups, or splits them to separate animals;  
+  moves animals between herds to reflect real-world transitions;  
+  and views herd composition and history to support planning and analysis.  
+
+* **state**  
+  * a set of `groups` with    
+    * a `name` of type `String`  
+    * an optional `description` of type `String`  
+    * a set of `animals` of type `ID`  
+
+
+* **actions**
+  * `createHerd (name: String, location: String, description): (herdName: String)`
+    * **effects** create a new herd with this owner, name, location, and no members
+
+  * `addAnimal (herdName: String, animal: Animal): Empty`
+    * **requires** herd exists and animal is in herd
+    * **effects** add the animal to the herd and record an add event
+
+  * `removeAnimal (herdName: Herd, animal: Animal): Empty`
+    * **requires** herd exists and animal is a member
+    * **effects** remove the animal from the herd and record a remove event
+
+  * `moveAnimal (sourceHerd: Herd, targetHerd: Herd, animal: Animal)`
+    * **requires** both herds exist and animal is a member of source
+    * **effects** remove the animal from source, add to target, and record a move event
+
+  * `mergeHerds (herd1: String, herd2: String): (herdName: String)`
+    * **requires** both herds exist
+    * **effects** move all animals from source to target, record a merge event, and archive source and target herd.
+
+  * `splitHerd (source: String, target: String, animals: Array<Animal>): Empty`
+    * **requires** source herd exists and all animals are members of source
+    * **effects** move specified animals from source to target, creating target if it does not already exist
