@@ -1,3 +1,12 @@
+---
+timestamp: 'Tue Oct 21 2025 15:23:31 GMT-0400 (Eastern Daylight Time)'
+parent: '[[..\20251021_152331.0a9aa404.md]]'
+content_id: ada8fb2c5170a15ebf3149f9a907147e41162b5b6a3c0fa74e757af8e8f02cb5
+---
+
+# file: src/AnimalIdentity/AnimalIdentityConcept.ts (Updated)
+
+```typescript
 import { Collection, Db } from "npm:mongodb";
 import { Empty, ID } from "@utils/types.ts";
 
@@ -105,11 +114,7 @@ export default class AnimalIdentityConcept {
    * @effects set the animal’s status to the new value and record optional notes
    */
   async updateStatus(
-    { animal, status, notes }: {
-      animal: Animal;
-      status: AnimalStatus;
-      notes: string;
-    },
+    { animal, status, notes }: { animal: Animal; status: AnimalStatus; notes: string },
   ): Promise<Empty | { error: string }> {
     // Precondition: animal exists
     const existingAnimal = await this.animals.findOne({ _id: animal });
@@ -123,15 +128,12 @@ export default class AnimalIdentityConcept {
         { $set: { status: status, notes: notes } },
       );
       if (result.matchedCount === 0) {
-        // This case should ideally not happen if findOne above passed, but good for robustness
         return { error: `Failed to update status for animal '${animal}'.` };
       }
       return {};
     } catch (e) {
       console.error("Error updating animal status:", e);
-      return {
-        error: "Failed to update animal status due to a database error.",
-      };
+      return { error: "Failed to update animal status due to a database error." };
     }
   }
 
@@ -166,9 +168,7 @@ export default class AnimalIdentityConcept {
       return {};
     } catch (e) {
       console.error("Error editing animal details:", e);
-      return {
-        error: "Failed to edit animal details due to a database error.",
-      };
+      return { error: "Failed to edit animal details due to a database error." };
     }
   }
 
@@ -178,11 +178,7 @@ export default class AnimalIdentityConcept {
    * @effects sets the animal’s status to 'transferred', and records the date and recipient notes in notes.
    */
   async markAsTransferred(
-    { animal, date, recipientNotes }: {
-      animal: Animal;
-      date: Date;
-      recipientNotes?: string;
-    },
+    { animal, date, recipientNotes }: { animal: Animal; date: Date; recipientNotes?: string },
   ): Promise<Empty | { error: string }> {
     // Precondition: animal exists
     const existingAnimal = await this.animals.findOne({ _id: animal });
@@ -191,15 +187,10 @@ export default class AnimalIdentityConcept {
     }
     // Precondition: animal's status is alive
     if (existingAnimal.status !== "alive") {
-      return {
-        error:
-          `Animal '${animal}' must be 'alive' to be marked as transferred (current status: ${existingAnimal.status}).`,
-      };
+      return { error: `Animal '${animal}' must be 'alive' to be marked as transferred (current status: ${existingAnimal.status}).` };
     }
 
-    const notes = `Transferred on ${
-      date.toISOString().split("T")[0]
-    }. Recipient notes: ${recipientNotes ?? "None"}.`;
+    const notes = `Transferred on ${date.toISOString().split("T")[0]}. Recipient notes: ${recipientNotes ?? "None"}.`;
     return this.updateStatus({ animal, status: "transferred", notes });
   }
 
@@ -218,15 +209,10 @@ export default class AnimalIdentityConcept {
     }
     // Precondition: animal's status is alive
     if (existingAnimal.status !== "alive") {
-      return {
-        error:
-          `Animal '${animal}' must be 'alive' to be marked as deceased (current status: ${existingAnimal.status}).`,
-      };
+      return { error: `Animal '${animal}' must be 'alive' to be marked as deceased (current status: ${existingAnimal.status}).` };
     }
 
-    const notes = `Deceased on ${date.toISOString().split("T")[0]}. Cause: ${
-      cause ?? "unspecified"
-    }.`;
+    const notes = `Deceased on ${date.toISOString().split("T")[0]}. Cause: ${cause ?? "unspecified"}.`;
     return this.updateStatus({ animal, status: "deceased", notes });
   }
 
@@ -236,11 +222,7 @@ export default class AnimalIdentityConcept {
    * @effects sets the animal’s status to 'sold', and records the date and buyer notes in notes.
    */
   async markAsSold(
-    { animal, date, buyerNotes }: {
-      animal: Animal;
-      date: Date;
-      buyerNotes?: string;
-    },
+    { animal, date, buyerNotes }: { animal: Animal; date: Date; buyerNotes?: string },
   ): Promise<Empty | { error: string }> {
     // Precondition: animal exists
     const existingAnimal = await this.animals.findOne({ _id: animal });
@@ -249,45 +231,11 @@ export default class AnimalIdentityConcept {
     }
     // Precondition: animal's status is alive
     if (existingAnimal.status !== "alive") {
-      return {
-        error:
-          `Animal '${animal}' must be 'alive' to be marked as sold (current status: ${existingAnimal.status}).`,
-      };
+      return { error: `Animal '${animal}' must be 'alive' to be marked as sold (current status: ${existingAnimal.status}).` };
     }
 
-    const notes = `Sold on ${date.toISOString().split("T")[0]}. Buyer notes: ${
-      buyerNotes ?? "None"
-    }.`;
+    const notes = `Sold on ${date.toISOString().split("T")[0]}. Buyer notes: ${buyerNotes ?? "None"}.`;
     return this.updateStatus({ animal, status: "sold", notes });
-  }
-
-  /**
-   * removeAnimal (animal: AnimalID): Empty
-   * @requires animal exists
-   * @effects removes the animal from the set of Animals
-   */
-  async removeAnimal(
-    { animal }: { animal: Animal },
-  ): Promise<Empty | { error: string }> {
-    // Precondition: animal exists
-    const existingAnimal = await this.animals.findOne({ _id: animal });
-    if (!existingAnimal) {
-      return { error: `Animal with ID '${animal}' not found.` };
-    }
-
-    try {
-      const result = await this.animals.deleteOne({ _id: animal });
-      if (result.deletedCount === 0) {
-        // This case should ideally not happen if findOne above passed, but good for robustness
-        return {
-          error: `Failed to remove animal '${animal}'. It may no longer exist.`,
-        };
-      }
-      return {};
-    } catch (e) {
-      console.error("Error removing animal:", e);
-      return { error: "Failed to remove animal due to a database error." };
-    }
   }
 
   // --- Concept Queries ---
@@ -297,9 +245,7 @@ export default class AnimalIdentityConcept {
    * @requires animal with `id` exists
    * @effects return the animal document for the given ID
    */
-  async _getAnimal(
-    { id }: { id: ID },
-  ): Promise<{ animal?: AnimalDocument } | { error: string }> {
+  async _getAnimal({ id }: { id: ID }): Promise<{ animal?: AnimalDocument } | { error: string }> {
     // Precondition: animal with `id` exists (implicitly checked by findOne)
     try {
       const animal = await this.animals.findOne({ _id: id });
@@ -318,9 +264,7 @@ export default class AnimalIdentityConcept {
    * @requires true
    * @effects return a list of all animal documents
    */
-  async _getAllAnimals(): Promise<
-    { animals: AnimalDocument[] } | { error: string }
-  > {
+  async _getAllAnimals(): Promise<{ animals: AnimalDocument[] } | { error: string }> {
     // Precondition: true (always allowed to query all animals)
     try {
       const allAnimals = await this.animals.find({}).toArray();
@@ -331,3 +275,4 @@ export default class AnimalIdentityConcept {
     }
   }
 }
+```
