@@ -15,8 +15,9 @@ import { GoogleGenerativeAI } from "npm:@google/generative-ai";
 const PREFIX = "GrowthTracking" + ".";
 
 // Generic types for this concept
-type Animal = ID;
-type ReportID = ID; // Using ID for reports as well, though `name` is also a unique identifier for reports
+type Animal = ID; // User-facing animal identifier
+type ReportID = ID; // Internal report _id
+type UserId = ID; // Owner/user identifier
 
 /**
  * a set of `WeightRecords` with
@@ -34,9 +35,12 @@ interface WeightRecord {
  * a set of `animals` with
  *   an `ID` of type `ID`
  *   a set of `WeightRecords`
+ *   a `userId` to link to the owner
  */
 interface AnimalDoc {
-  _id: Animal;
+  _id: ID; // System-generated unique ID (Mongo _id)
+  ownerId: UserId; // Owner of the animal record (scoping key)
+  animalId: Animal; // User-facing animal identifier, unique per owner
   weightRecords: WeightRecord[];
 }
 
@@ -58,7 +62,7 @@ interface LLMSummaryOutput {
   concerningTrends: string[];
   averagePerformers: string[];
   potentialRecordErrors: string[];
-  insufficientData: string[]; // NEW: Category for animals with insufficient data
+  insufficientData: string[]; // Category for animals with insufficient data
   insights: string; // A few short paragraphs (2-3) with deeper analysis
 }
 
@@ -69,12 +73,14 @@ interface LLMSummaryOutput {
  *   a `target` of type `set of IDs` (animals)
  *   a set of `results` of type `(key-value pairs of data)` (structured results per animal)
  *   an optional AI generatedSummary
+ *   a `userId` to link to the owner
  */
 interface ReportDoc {
-  _id: ReportID; // Internal ID for MongoDB
-  reportName: string; // Used as the primary identifier for reports in actions
+  _id: ReportID; // Internal ID for MongoDB (system-generated)
+  reportName: string; // User-facing report name, unique per owner
+  ownerId: UserId; // Associate report with a user
   dateGenerated: Date;
-  targetAnimals: Animal[]; // A set of animals included in this report
+  targetAnimals: Animal[]; // A set of animals included in this report (user-facing IDs)
   results: AnimalReportResult[]; // Structured results
   aiGeneratedSummary: string; // Optional string fields have an empty string (stores stringified JSON from LLM)
 }
@@ -99,15 +105,16 @@ export default class GrowthTrackingConcept {
    * @effects create a new weight record for this animal
    */
   async recordWeight(
-    { animal, date, weight, notes }: {
+    { user, animal, date, weight, notes }: {
+      user: UserId;
       animal: Animal;
       date: Date | string;
       weight: number;
       notes: string;
     },
   ): Promise<Empty | { error: string }> {
-    if (!animal || !date || typeof weight !== "number") {
-      return { error: "Animal ID, date, and weight are required." };
+    if (!user || !animal || !date || typeof weight !== "number") {
+      return { error: "User ID, Animal ID, date, and weight are required." };
     }
     const parsedDate = this._toDate(date);
     if (isNaN(parsedDate.getTime())) {
@@ -120,9 +127,13 @@ export default class GrowthTrackingConcept {
       notes: notes || "", // Ensure notes is an empty string if not provided
     };
 
+    // Upsert animal document by owner+animalId; generate system _id on insert
     const result = await this.animals.updateOne(
-      { _id: animal },
-      { $push: { weightRecords: newWeightRecord } },
+      { ownerId: user, animalId: animal },
+      {
+        $push: { weightRecords: newWeightRecord },
+        $setOnInsert: { _id: freshID(), ownerId: user, animalId: animal },
+      },
       { upsert: true },
     );
 
@@ -135,41 +146,51 @@ export default class GrowthTrackingConcept {
 
   /**
    * @action removeWeightRecord
-   * @requires there is a weight record for this animal on the given date
+   * @requires there is a weight record for this animal on the given date, owned by the user
    * @effects remove the given weight record from the animal's set of weight records
    */
   async removeWeightRecord(
-    { animal, date }: { animal: Animal; date: Date | string },
+    { user, animal, date }: {
+      user: UserId;
+      animal: Animal;
+      date: Date | string;
+    },
   ): Promise<Empty | { error: string }> {
-    if (!animal || !date) {
-      return { error: "Animal ID and date are required." };
+    if (!user || !animal || !date) {
+      return { error: "User ID, Animal ID, and date are required." };
     }
     const parsedDate = this._toDate(date);
     if (isNaN(parsedDate.getTime())) {
       return { error: "Invalid date provided." };
     }
 
-    const animalDoc = await this.animals.findOne({ _id: animal });
+    const animalDoc = await this.animals.findOne({
+      ownerId: user,
+      animalId: animal,
+    });
     if (!animalDoc) {
-      return { error: `Animal with ID ${animal} not found.` };
+      return { error: `Animal with ID ${animal} not found for user ${user}.` };
     }
 
     const initialWeightRecordsCount = animalDoc.weightRecords.length;
 
     const result = await this.animals.updateOne(
-      { _id: animal },
+      { ownerId: user, animalId: animal },
       { $pull: { weightRecords: { date: parsedDate } } },
     );
 
     if (result.modifiedCount === 0) {
-      const updatedAnimalDoc = await this.animals.findOne({ _id: animal });
+      const updatedAnimalDoc = await this.animals.findOne({
+        ownerId: user,
+        animalId: animal,
+      });
       if (
         updatedAnimalDoc &&
         updatedAnimalDoc.weightRecords.length === initialWeightRecordsCount
       ) {
         return {
           error:
-            `No weight record found for animal ${animal} on date ${parsedDate.toISOString()}.`,
+            `No weight record found for animal ${animal} on date ${parsedDate.toISOString()} for user ${user}.`,
         };
       }
     }
@@ -183,23 +204,25 @@ export default class GrowthTrackingConcept {
 
   /**
    * @action generateReport
-   * @requires target animal exists within the GrowthTracking concept's data
+   * @requires target animal exists within the GrowthTracking concept's data for the given user
    * @effects If no report with this name exists then generate a new report for the given animal's growth performance
    *          within the specified date range. Otherwise, update the existing report by adding/updating the growth
    *          performance of this animal. The report should include each recorded weight of the animal
    *          as well as its average daily rate of gain over each time period.
    */
   async generateReport(
-    { animal, startDateRange, endDateRange, reportName }: {
+    { user, animal, startDateRange, endDateRange, reportName }: {
+      user: UserId;
       animal: Animal;
       startDateRange: Date | string;
       endDateRange: Date | string;
       reportName: string;
     },
   ): Promise<{ report: ReportDoc } | { error: string }> {
-    if (!animal || !reportName || !startDateRange || !endDateRange) {
+    if (!user || !animal || !reportName || !startDateRange || !endDateRange) {
       return {
-        error: "Animal ID, report name, start date, and end date are required.",
+        error:
+          "User ID, Animal ID, report name, start date, and end date are required.",
       };
     }
     const start = this._toDate(startDateRange);
@@ -211,10 +234,14 @@ export default class GrowthTrackingConcept {
       return { error: "Start date cannot be after end date." };
     }
 
-    const animalDoc = await this.animals.findOne({ _id: animal });
+    const animalDoc = await this.animals.findOne({
+      ownerId: user,
+      animalId: animal,
+    });
     if (!animalDoc) {
       return {
-        error: `Animal with ID ${animal} not found. Cannot generate report.`,
+        error:
+          `Animal with ID ${animal} not found for user ${user}. Cannot generate report.`,
       };
     }
 
@@ -265,13 +292,15 @@ export default class GrowthTrackingConcept {
     }
 
     const now = new Date();
+    // Find report by name AND owner
     const existingReport = await this.reports.findOne({
       reportName: reportName,
+      ownerId: user,
     });
     let finalReport: ReportDoc;
 
     if (existingReport) {
-      // Update existing report
+      // Update existing report for THIS user
       const updatedTargetAnimals = Array.from(
         new Set([...existingReport.targetAnimals, animal]),
       );
@@ -284,7 +313,7 @@ export default class GrowthTrackingConcept {
       updatedResultsMap.set(animal, currentAnimalReportResult);
 
       const updateResult = await this.reports.updateOne(
-        { _id: existingReport._id },
+        { _id: existingReport._id, ownerId: user },
         {
           $set: {
             dateGenerated: now,
@@ -303,11 +332,12 @@ export default class GrowthTrackingConcept {
         results: Array.from(updatedResultsMap.values()),
       };
     } else {
-      // Create new report
+      // Create new report for THIS user
       const newReportId = freshID();
       finalReport = {
         _id: newReportId,
         reportName: reportName,
+        ownerId: user,
         dateGenerated: now,
         targetAnimals: [animal],
         results: [currentAnimalReportResult],
@@ -324,31 +354,48 @@ export default class GrowthTrackingConcept {
 
   /**
    * @action renameReport
-   * @requires oldName of report exists
-   * @effects renames the specified report
+   * @requires oldName of report exists for the given user
+   * @effects renames the specified report for the given user
    */
   async renameReport(
-    { oldName, newName }: { oldName: string; newName: string },
+    { user, oldName, newName }: {
+      user: UserId;
+      oldName: string;
+      newName: string;
+    },
   ): Promise<{ newName: string } | { error: string }> {
-    if (!oldName || !newName) {
-      return { error: "Old report name and new report name are required." };
+    if (!user || !oldName || !newName) {
+      return {
+        error: "User ID, old report name, and new report name are required.",
+      };
     }
     if (oldName === newName) {
       return { error: "Old name and new name are the same." };
     }
 
-    const existingReport = await this.reports.findOne({ reportName: oldName });
+    const existingReport = await this.reports.findOne({
+      reportName: oldName,
+      ownerId: user,
+    });
     if (!existingReport) {
-      return { error: `Report with name '${oldName}' not found.` };
+      return {
+        error: `Report with name '${oldName}' not found for user ${user}.`,
+      };
     }
 
-    const nameConflict = await this.reports.findOne({ reportName: newName });
+    const nameConflict = await this.reports.findOne({
+      reportName: newName,
+      ownerId: user,
+    });
     if (nameConflict) {
-      return { error: `A report with name '${newName}' already exists.` };
+      return {
+        error:
+          `A report with name '${newName}' already exists for user ${user}.`,
+      };
     }
 
     const result = await this.reports.updateOne(
-      { _id: existingReport._id },
+      { _id: existingReport._id, ownerId: user },
       { $set: { reportName: newName } },
     );
 
@@ -361,20 +408,25 @@ export default class GrowthTrackingConcept {
 
   /**
    * @action deleteReport
-   * @requires report exists
-   * @effects remove the report from the system
+   * @requires report exists for the given user
+   * @effects remove the report from the system for the given user
    */
   async deleteReport(
-    { reportName }: { reportName: string },
+    { user, reportName }: { user: UserId; reportName: string },
   ): Promise<Empty | { error: string }> {
-    if (!reportName) {
-      return { error: "Report name is required." };
+    if (!user || !reportName) {
+      return { error: "User ID and report name are required." };
     }
 
-    const result = await this.reports.deleteOne({ reportName: reportName });
+    const result = await this.reports.deleteOne({
+      reportName: reportName,
+      ownerId: user,
+    });
 
     if (result.deletedCount === 0) {
-      return { error: `Report with name '${reportName}' not found.` };
+      return {
+        error: `Report with name '${reportName}' not found for user ${user}.`,
+      };
     }
     if (!result.acknowledged) {
       return { error: "Failed to delete report." };
@@ -489,9 +541,9 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
         !parsedResponse.potentialRecordErrors.every((item) =>
           typeof item === "string"
         ) ||
-        !Array.isArray(parsedResponse.insufficientData) || // NEW: Validate insufficientData array
+        !Array.isArray(parsedResponse.insufficientData) || // Validate insufficientData array
         !parsedResponse.insufficientData.every((item) =>
-          // NEW: Validate items in insufficientData
+          // Validate items in insufficientData
           typeof item === "string"
         ) ||
         typeof parsedResponse.insights !== "string"
@@ -514,40 +566,45 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
 
   /**
    * @action aiSummary
-   * @requires report exists
+   * @requires report exists for the given user
    * @effects Forces the AI to generate a new summary of the report,
    *          overwriting any existing summary, and saves it for future viewing.
    *          This action always generates a new summary.
    */
   async aiSummary(
-    { reportName }: { reportName: string },
+    { user, reportName }: { user: UserId; reportName: string },
   ): Promise<{ summary: string } | { error: string }> {
-    if (!reportName) {
-      return { error: "Report name is required." };
+    if (!user || !reportName) {
+      return { error: "User ID and Report name are required." };
     }
 
-    const report = await this.reports.findOne({ reportName: reportName });
+    const report = await this.reports.findOne({
+      reportName: reportName,
+      ownerId: user,
+    });
     if (!report) {
-      return { error: `Report with name '${reportName}' not found.` };
+      return {
+        error: `Report with name '${reportName}' not found for user ${user}.`,
+      };
     }
 
     try {
       const generatedSummary = await this._callLLMAndGetSummary(report);
 
       await this.reports.updateOne(
-        { _id: report._id },
+        { _id: report._id, ownerId: user },
         { $set: { aiGeneratedSummary: generatedSummary } },
       );
 
       return { summary: generatedSummary };
     } catch (llmError: unknown) {
       console.error("Error generating AI summary:", llmError);
-      const message =
-        llmError && typeof llmError === "object" && "message" in llmError
-          ? String((llmError as { message?: unknown }).message)
-          : "Unknown LLM error";
       return {
-        error: `Failed to generate AI summary: ${message}`,
+        error: `Failed to generate AI summary: ${
+          (llmError && typeof llmError === "object" && "message" in llmError)
+            ? String((llmError as { message?: unknown }).message)
+            : "Unknown LLM error"
+        }`,
       };
     }
   }
@@ -558,15 +615,20 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
    *          it is returned. Otherwise, a new summary is generated, saved, and then returned.
    */
   async _getAiSummary(
-    { reportName }: { reportName: string },
+    { user, reportName }: { user: UserId; reportName: string },
   ): Promise<{ summary: string } | { error: string }> {
-    if (!reportName) {
-      return { error: "Report name is required." };
+    if (!user || !reportName) {
+      return { error: "User ID and Report name are required." };
     }
 
-    const report = await this.reports.findOne({ reportName: reportName });
+    const report = await this.reports.findOne({
+      reportName: reportName,
+      ownerId: user,
+    });
     if (!report) {
-      return { error: `Report with name '${reportName}' not found.` };
+      return {
+        error: `Report with name '${reportName}' not found for user ${user}.`,
+      };
     }
 
     // If a summary already exists, return it immediately
@@ -575,56 +637,87 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
     }
 
     // Otherwise, generate a new summary using the action logic
-    return await this.aiSummary({ reportName: reportName });
+    return await this.aiSummary({ user, reportName: reportName }); // Pass user to aiSummary action
   }
 
   /**
    * @query _getAnimalWeights
-   * @effects Returns all weight records for a given animal.
+   * @effects Returns all weight records for a given animal owned by the user.
    */
   async _getAnimalWeights(
-    { animal }: { animal: Animal },
+    { user, animal }: { user: UserId; animal: Animal },
   ): Promise<{ weightRecords: WeightRecord[] } | { error: string }> {
-    if (!animal) {
-      return { error: "Animal ID is required." };
+    if (!user || !animal) {
+      return { error: "User ID and Animal ID are required." };
     }
-    const animalDoc = await this.animals.findOne({ _id: animal });
+    const animalDoc = await this.animals.findOne({
+      ownerId: user,
+      animalId: animal,
+    });
     if (!animalDoc) {
-      return { error: `Animal with ID ${animal} not found.` };
+      return { error: `Animal with ID ${animal} not found for user ${user}.` };
     }
     return { weightRecords: animalDoc.weightRecords };
   }
 
   /**
    * @query _getReportByName
-   * @effects Returns a report document by its name.
+   * @effects Returns a report document by its name, owned by the user.
    */
   async _getReportByName(
-    { reportName }: { reportName: string },
+    { user, reportName }: { user: UserId; reportName: string },
   ): Promise<{ report: ReportDoc } | { error: string }> {
-    if (!reportName) {
-      return { error: "Report name is required." };
+    if (!user || !reportName) {
+      return { error: "User ID and Report name are required." };
     }
-    const report = await this.reports.findOne({ reportName: reportName });
+    const report = await this.reports.findOne({
+      reportName: reportName,
+      ownerId: user,
+    });
     if (!report) {
-      return { error: `Report with name '${reportName}' not found.` };
+      return {
+        error: `Report with name '${reportName}' not found for user ${user}.`,
+      };
     }
     return { report: report };
   }
 
   /**
+   * @query _listReports
+   * @effects Returns all reports belonging to the given user.
+   */
+  async _listReports(
+    { user }: { user: UserId },
+  ): Promise<{ reports: ReportDoc[] } | { error: string }> {
+    if (!user) {
+      return { error: "User ID is required." };
+    }
+
+    const reports = await this.reports.find({ ownerId: user }).toArray();
+    return { reports };
+  }
+
+  /**
    * @query _getAllAnimalsWithWeightRecords
-   * @effects Returns a list of IDs for all animals that have at least one weight record.
+   * @effects Returns a list of IDs for all animals that have at least one weight record for a given user.
    *          If no animals have weight records, returns an empty array.
    */
-  async _getAllAnimalsWithWeightRecords(): Promise<{ animals: Animal[] }> {
-    // Find all animal documents where the 'weightRecords' array is not empty
+  async _getAllAnimalsWithWeightRecords(
+    { user }: { user: UserId },
+  ): Promise<{ animals: Animal[] } | { error: string }> {
+    if (!user) {
+      return { error: "User ID is required." };
+    }
+    // Find all animal documents for THIS user where the 'weightRecords' array is not empty
     const animalDocs = await this.animals.find({
+      ownerId: user,
       weightRecords: { $exists: true, $not: { $size: 0 } },
-    }).project({ _id: 1 }).toArray();
+    }).project({ animalId: 1 }).toArray();
 
-    // Map the results to an array of Animal IDs
-    const animals = animalDocs.map((doc) => doc._id);
+    // Map the results to an array of user-facing Animal IDs
+    const animals = animalDocs.map((doc) =>
+      (doc as unknown as { animalId: Animal }).animalId
+    );
 
     return { animals: animals };
   }

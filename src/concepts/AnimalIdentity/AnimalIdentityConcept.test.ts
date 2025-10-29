@@ -13,7 +13,7 @@ import AnimalIdentityConcept from "./AnimalIdentityConcept.ts";
 // Define an interface for the resources to be passed into each test step
 interface TestContext {
   db: Db;
-  client: any; // MongoClient type is not directly exported, using any for simplicity
+  client: { close: () => Promise<void> } | undefined; // Narrow type with close()
   concept: AnimalIdentityConcept;
   animalsCollection: Collection;
 }
@@ -21,7 +21,9 @@ interface TestContext {
 // AnimalDocument interface for type-safety when fetching from collection
 // This should mirror the AnimalDocument in AnimalIdentityConcept.ts (without parent/offspring fields)
 interface AnimalDocumentTest {
-  _id: ID;
+  _id: ID; // internal system ID
+  ownerId: ID;
+  animalId: ID; // user-facing id
   species: string;
   breed: string;
   sex: "male" | "female" | "neutered";
@@ -79,13 +81,13 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
 
   const teardownTestContext = async (context: TestContext) => {
     // console.log("--- teardownTestContext START ---"); // Uncomment for debugging setup issues
-    if (context && context.client) {
-      await context.client.close();
-    }
+    await context.client?.close();
     // console.log("--- teardownTestContext END ---\n"); // Uncomment for debugging setup issues
   };
 
   // --- registerAnimal tests ---
+  const testUser = "test-user" as ID;
+
   await t.step(
     "registerAnimal: should successfully register an animal with all fields provided",
     async () => {
@@ -99,6 +101,7 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         const notes = "Friendly and energetic.";
 
         const result = await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species,
           sex,
@@ -108,11 +111,15 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         });
 
         assertObjectMatch(result, { animal: animalId });
-        const fetchedAnimal = (await concept._getAnimal({ id: animalId })) as {
+        const fetchedAnimal = (await concept._getAnimal({
+          user: testUser,
+          id: animalId,
+        })) as {
           animal: AnimalDocumentTest;
         };
         assertExists(fetchedAnimal.animal);
-        assertEquals(fetchedAnimal.animal._id, animalId);
+        assertEquals(fetchedAnimal.animal.animalId, animalId);
+        assertEquals(fetchedAnimal.animal.ownerId, testUser);
         assertEquals(fetchedAnimal.animal.species, species);
         assertEquals(fetchedAnimal.animal.sex, sex);
         assertEquals(
@@ -143,17 +150,22 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         const sex = "female";
 
         const result = await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species,
           sex,
         });
 
         assertObjectMatch(result, { animal: animalId });
-        const fetchedAnimal = (await concept._getAnimal({ id: animalId })) as {
+        const fetchedAnimal = (await concept._getAnimal({
+          user: testUser,
+          id: animalId,
+        })) as {
           animal: AnimalDocumentTest;
         };
         assertExists(fetchedAnimal.animal);
-        assertEquals(fetchedAnimal.animal._id, animalId);
+        assertEquals(fetchedAnimal.animal.animalId, animalId);
+        assertEquals(fetchedAnimal.animal.ownerId, testUser);
         assertEquals(fetchedAnimal.animal.species, species);
         assertEquals(fetchedAnimal.animal.sex, sex);
         assertEquals(fetchedAnimal.animal.birthDate, null);
@@ -178,6 +190,7 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const animalId = "animal:bird:3" as ID;
         const registerSuccess = await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species: "Bird",
           sex: "male",
@@ -187,16 +200,21 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         }
 
         const result = await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species: "Bird",
           sex: "female",
         });
 
         assertObjectMatch(result, {
-          error: `Animal with ID '${animalId}' already exists.`,
+          error:
+            `Animal with ID '${animalId}' already exists for user '${testUser}'.`,
         });
         assertEquals(
-          await animalsCollection.countDocuments({ _id: animalId }),
+          await animalsCollection.countDocuments({
+            ownerId: testUser,
+            animalId: animalId,
+          }),
           1,
         );
       } finally {
@@ -219,11 +237,13 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         const animal2Id = "animal:sheep:2" as ID;
 
         await concept.registerAnimal({
+          user: testUser,
           id: animal1Id,
           species: "Sheep",
           sex: "female",
         });
         await concept.registerAnimal({
+          user: testUser,
           id: animal2Id,
           species: "Sheep",
           sex: "male",
@@ -249,6 +269,7 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const animalId = "animal:horse:10" as ID;
         await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species: "Horse",
           sex: "male",
@@ -257,13 +278,17 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         const newStatus = "sold";
         const newNotes = "Sold to Farmer John.";
         const result = await concept.updateStatus({
+          user: testUser,
           animal: animalId,
           status: newStatus,
           notes: newNotes,
         });
 
         assertObjectMatch(result, {}); // Expecting an Empty object for success
-        const fetchedAnimal = (await concept._getAnimal({ id: animalId })) as {
+        const fetchedAnimal = (await concept._getAnimal({
+          user: testUser,
+          id: animalId,
+        })) as {
           animal: AnimalDocumentTest;
         };
         assertExists(fetchedAnimal.animal);
@@ -287,13 +312,15 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const nonExistentAnimalId = "animal:ghost:11" as ID;
         const result = await concept.updateStatus({
+          user: testUser,
           animal: nonExistentAnimalId,
           status: "deceased",
           notes: "Gone.",
         });
 
         assertObjectMatch(result, {
-          error: `Animal with ID '${nonExistentAnimalId}' not found.`,
+          error:
+            `Animal with ID '${nonExistentAnimalId}' not found for user '${testUser}'.`,
         });
       } finally {
         await teardownTestContext({
@@ -314,6 +341,7 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const animalId = "animal:zebra:50" as ID;
         await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species: "Zebra",
           sex: "female",
@@ -322,7 +350,10 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
           notes: "Initial notes",
         });
 
-        const originalAnimal = (await concept._getAnimal({ id: animalId })) as {
+        const originalAnimal = (await concept._getAnimal({
+          user: testUser,
+          id: animalId,
+        })) as {
           animal: AnimalDocumentTest;
         };
         assertExists(originalAnimal.animal);
@@ -334,6 +365,7 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         const newSex = "male";
 
         const result = await concept.editDetails({
+          user: testUser,
           animal: animalId,
           species: newSpecies,
           breed: newBreed,
@@ -343,11 +375,14 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
 
         assertObjectMatch(result, {}); // Expecting an Empty object for success
 
-        const fetchedAnimal = (await concept._getAnimal({ id: animalId })) as {
+        const fetchedAnimal = (await concept._getAnimal({
+          user: testUser,
+          id: animalId,
+        })) as {
           animal: AnimalDocumentTest;
         };
         assertExists(fetchedAnimal.animal);
-        assertEquals(fetchedAnimal.animal._id, animalId);
+        assertEquals(fetchedAnimal.animal.animalId, animalId);
         assertEquals(fetchedAnimal.animal.species, newSpecies);
         assertEquals(fetchedAnimal.animal.breed, newBreed);
         assertEquals(
@@ -375,6 +410,7 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const nonExistentAnimalId = "animal:phantom:51" as ID;
         const result = await concept.editDetails({
+          user: testUser,
           animal: nonExistentAnimalId,
           species: "Phantom",
           breed: "Invisible",
@@ -383,7 +419,8 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         });
 
         assertObjectMatch(result, {
-          error: `Animal with ID '${nonExistentAnimalId}' not found.`,
+          error:
+            `Animal with ID '${nonExistentAnimalId}' not found for user '${testUser}'.`,
         });
       } finally {
         await teardownTestContext({
@@ -404,6 +441,7 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const animalId = "animal:pig:20" as ID;
         await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species: "Pig",
           sex: "female",
@@ -412,13 +450,17 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         const transferDate = new Date("2023-05-10");
         const recipientNotes = "New owner is delighted.";
         const result = await concept.markAsTransferred({
+          user: testUser,
           animal: animalId,
           date: transferDate,
           recipientNotes,
         });
 
         assertObjectMatch(result, {});
-        const fetchedAnimal = (await concept._getAnimal({ id: animalId })) as {
+        const fetchedAnimal = (await concept._getAnimal({
+          user: testUser,
+          id: animalId,
+        })) as {
           animal: AnimalDocumentTest;
         };
         assertExists(fetchedAnimal.animal);
@@ -449,12 +491,14 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const nonExistentAnimalId = "animal:alien:21" as ID;
         const result = await concept.markAsTransferred({
+          user: testUser,
           animal: nonExistentAnimalId,
           date: new Date(),
         });
 
         assertObjectMatch(result, {
-          error: `Animal with ID '${nonExistentAnimalId}' not found.`,
+          error:
+            `Animal with ID '${nonExistentAnimalId}' not found for user '${testUser}'.`,
         });
       } finally {
         await teardownTestContext({
@@ -474,12 +518,14 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const animalId = "animal:chicken:22" as ID;
         await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species: "Chicken",
           sex: "female",
         });
         // Intentionally change status to non-alive
         const updateResult = await concept.updateStatus({
+          user: testUser,
           animal: animalId,
           status: "deceased",
           notes: "Killed by fox",
@@ -489,13 +535,14 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         }
 
         const result = await concept.markAsTransferred({
+          user: testUser,
           animal: animalId,
           date: new Date(),
         });
 
         assertObjectMatch(result, {
           error:
-            `Animal '${animalId}' must be 'alive' to be marked as transferred (current status: deceased).`,
+            `Animal '${animalId}' for user '${testUser}' must be 'alive' to be marked as transferred (current status: deceased).`,
         });
       } finally {
         await teardownTestContext({
@@ -516,6 +563,7 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const animalId = "animal:goat:30" as ID;
         await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species: "Goat",
           sex: "male",
@@ -524,13 +572,17 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         const deceasedDate = new Date("2023-01-01");
         const cause = "Old age";
         const result = await concept.markAsDeceased({
+          user: testUser,
           animal: animalId,
           date: deceasedDate,
           cause,
         });
 
         assertObjectMatch(result, {});
-        const fetchedAnimal = (await concept._getAnimal({ id: animalId })) as {
+        const fetchedAnimal = (await concept._getAnimal({
+          user: testUser,
+          id: animalId,
+        })) as {
           animal: AnimalDocumentTest;
         };
         assertExists(fetchedAnimal.animal);
@@ -558,12 +610,14 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const nonExistentAnimalId = "animal:dragon:31" as ID;
         const result = await concept.markAsDeceased({
+          user: testUser,
           animal: nonExistentAnimalId,
           date: new Date(),
         });
 
         assertObjectMatch(result, {
-          error: `Animal with ID '${nonExistentAnimalId}' not found.`,
+          error:
+            `Animal with ID '${nonExistentAnimalId}' not found for user '${testUser}'.`,
         });
       } finally {
         await teardownTestContext({
@@ -583,28 +637,33 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const animalId = "animal:cow:32" as ID;
         await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species: "Cow",
           sex: "female",
         });
         // Intentionally change status to non-alive
         const updateResult = await concept.updateStatus({
+          user: testUser,
           animal: animalId,
           status: "sold",
           notes: "Bought by another farmer",
         });
-        if ("error" in updateResult) {fail(
+        if ("error" in updateResult) {
+          fail(
             `Failed to update status: ${updateResult.error}`,
-          );}
+          );
+        }
 
         const result = await concept.markAsDeceased({
+          user: testUser,
           animal: animalId,
           date: new Date(),
         });
 
         assertObjectMatch(result, {
           error:
-            `Animal '${animalId}' must be 'alive' to be marked as deceased (current status: sold).`,
+            `Animal '${animalId}' for user '${testUser}' must be 'alive' to be marked as deceased (current status: sold).`,
         });
       } finally {
         await teardownTestContext({
@@ -625,6 +684,7 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const animalId = "animal:sheepdog:40" as ID;
         await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species: "Sheepdog",
           sex: "male",
@@ -633,13 +693,17 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
         const soldDate = new Date("2023-07-20");
         const buyerNotes = "Excellent working dog.";
         const result = await concept.markAsSold({
+          user: testUser,
           animal: animalId,
           date: soldDate,
           buyerNotes,
         });
 
         assertObjectMatch(result, {});
-        const fetchedAnimal = (await concept._getAnimal({ id: animalId })) as {
+        const fetchedAnimal = (await concept._getAnimal({
+          user: testUser,
+          id: animalId,
+        })) as {
           animal: AnimalDocumentTest;
         };
         assertExists(fetchedAnimal.animal);
@@ -670,12 +734,14 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const nonExistentAnimalId = "animal:unicorn:41" as ID;
         const result = await concept.markAsSold({
+          user: testUser,
           animal: nonExistentAnimalId,
           date: new Date(),
         });
 
         assertObjectMatch(result, {
-          error: `Animal with ID '${nonExistentAnimalId}' not found.`,
+          error:
+            `Animal with ID '${nonExistentAnimalId}' not found for user '${testUser}'.`,
         });
       } finally {
         await teardownTestContext({
@@ -695,28 +761,33 @@ Deno.test("AnimalIdentityConcept actions", async (t) => {
       try {
         const animalId = "animal:duck:42" as ID;
         await concept.registerAnimal({
+          user: testUser,
           id: animalId,
           species: "Duck",
           sex: "female",
         });
         // Intentionally change status to non-alive
         const updateResult = await concept.updateStatus({
+          user: testUser,
           animal: animalId,
           status: "deceased",
           notes: "Natural causes",
         });
-        if ("error" in updateResult) {fail(
+        if ("error" in updateResult) {
+          fail(
             `Failed to update status: ${updateResult.error}`,
-          );}
+          );
+        }
 
         const result = await concept.markAsSold({
+          user: testUser,
           animal: animalId,
           date: new Date(),
         });
 
         assertObjectMatch(result, {
           error:
-            `Animal '${animalId}' must be 'alive' to be marked as sold (current status: deceased).`,
+            `Animal '${animalId}' for user '${testUser}' must be 'alive' to be marked as sold (current status: deceased).`,
         });
       } finally {
         await teardownTestContext({

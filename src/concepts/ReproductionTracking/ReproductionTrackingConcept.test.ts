@@ -79,11 +79,13 @@ Deno.test("ReproductionTrackingConcept - removeMother action", async (t) => {
     const motherId = "mother:Daisy" as ID;
 
     await concept.addMother({ motherId: motherId as string });
-    let addedMother = await concept.mothers.findOne({ _id: motherId });
-    assertEquals(
-      addedMother,
-      { _id: motherId, notes: "" },
-      "Mother should exist before removal",
+    const addedMother = await concept.mothers.findOne({ _id: motherId });
+    assertExists(addedMother, "Mother should exist before removal");
+    assertEquals(addedMother?._id, motherId);
+    assertEquals(addedMother?.notes, "");
+    // nextLitterNumber should be initialized on add
+    assertExists(
+      (addedMother as { nextLitterNumber?: number }).nextLitterNumber,
     );
 
     const removeResult = await concept.removeMother({
@@ -104,7 +106,7 @@ Deno.test("ReproductionTrackingConcept - removeMother action", async (t) => {
     async () => {
       const nonExistentMotherId = "mother:NonExistent" as ID;
 
-      let nonExistentMother = await concept.mothers.findOne({
+      const nonExistentMother = await concept.mothers.findOne({
         _id: nonExistentMotherId,
       });
       assertEquals(
@@ -871,7 +873,7 @@ Deno.test("ReproductionTrackingConcept - updateOffspring action", async (t) => {
   await t.step("should successfully update a single field (sex)", async () => {
     const newSex = "female";
     const updateResult = await concept.updateOffspring({
-      offspringId: offspringId as string,
+      oldOffspringId: offspringId as string,
       sex: newSex,
     });
 
@@ -914,7 +916,7 @@ Deno.test("ReproductionTrackingConcept - updateOffspring action", async (t) => {
 
       const newNotes = "Updated offspring notes";
       const updateResult = await concept.updateOffspring({
-        offspringId: offspringId as string,
+        oldOffspringId: offspringId as string,
         litterId: litterId2 as string,
         notes: newNotes,
       });
@@ -940,14 +942,16 @@ Deno.test("ReproductionTrackingConcept - updateOffspring action", async (t) => {
     async () => {
       // Set notes to something specific first for clear testing
       await concept.updateOffspring({
-        offspringId: offspringId as string,
+        oldOffspringId: offspringId as string,
         notes: "Temporary notes to be cleared",
       });
-      let tempOffspring = await concept.offspring.findOne({ _id: offspringId });
+      const tempOffspring = await concept.offspring.findOne({
+        _id: offspringId,
+      });
       assertEquals(tempOffspring?.notes, "Temporary notes to be cleared");
 
       const updateResult = await concept.updateOffspring({
-        offspringId: offspringId as string,
+        oldOffspringId: offspringId as string,
         notes: undefined, // Explicitly pass undefined
       });
 
@@ -970,10 +974,10 @@ Deno.test("ReproductionTrackingConcept - updateOffspring action", async (t) => {
     async () => {
       // Set notes to something specific first
       await concept.updateOffspring({
-        offspringId: offspringId as string,
+        oldOffspringId: offspringId as string,
         notes: "Original notes for non-update test",
       });
-      let currentOffspring = await concept.offspring.findOne({
+      const currentOffspring = await concept.offspring.findOne({
         _id: offspringId,
       });
       assertEquals(
@@ -984,7 +988,7 @@ Deno.test("ReproductionTrackingConcept - updateOffspring action", async (t) => {
       // Update another field without touching notes
       const finalSex = "neutered";
       const updateResult = await concept.updateOffspring({
-        offspringId: offspringId as string,
+        oldOffspringId: offspringId as string,
         sex: finalSex,
       });
 
@@ -1008,7 +1012,7 @@ Deno.test("ReproductionTrackingConcept - updateOffspring action", async (t) => {
     async () => {
       const nonExistentOffspringId = "offspring:NonExistent" as ID;
       const updateResult = await concept.updateOffspring({
-        offspringId: nonExistentOffspringId as string,
+        oldOffspringId: nonExistentOffspringId as string,
         sex: "female",
       });
 
@@ -1026,7 +1030,7 @@ Deno.test("ReproductionTrackingConcept - updateOffspring action", async (t) => {
     async () => {
       const nonExistentLitterId = "litter:NonExistentTarget" as ID;
       const updateResult = await concept.updateOffspring({
-        offspringId: offspringId as string,
+        oldOffspringId: offspringId as string,
         litterId: nonExistentLitterId as string,
       });
 
@@ -1471,9 +1475,11 @@ Deno.test("ReproductionTrackingConcept - generateReport action", async (t) => {
       //   - OA2-2 (weaned, alive) = 1
       //   - OA2-3 (weaned, alive) = 1
       // Total survived till weaning = 1 + 3 = 4
-      // Weaning Survival Rate: (4 / 6) * 100 = 66.67%
+      // New logic: exclude alive-not-weaned from denominator
+      // Pending to be weaned = 1 (OA1-3)
+      // Weaning Survival Rate: (4 / (6 - 1)) * 100 = 80.00%
       const expectedOffspringCount = 6;
-      const expectedWeaningSurvival = "66.67%";
+      const expectedWeaningSurvival = "80.00%";
 
       const generatedReport = await concept.reports.findOne({
         _id: reportName1 as ID,
@@ -1490,6 +1496,11 @@ Deno.test("ReproductionTrackingConcept - generateReport action", async (t) => {
       assertExists(
         generatedReport.results[0].includes(
           `Offspring: ${expectedOffspringCount}`,
+        ),
+      );
+      assertExists(
+        generatedReport.results[0].includes(
+          `To be weaned: 1`,
         ),
       );
       assertExists(
@@ -1536,6 +1547,7 @@ Deno.test("ReproductionTrackingConcept - generateReport action", async (t) => {
       );
       assertExists(generatedReport.results[0].includes(`Litters: 0`));
       assertExists(generatedReport.results[0].includes(`Offspring: 0`));
+      assertExists(generatedReport.results[0].includes(`To be weaned: 0`));
       assertExists(
         generatedReport.results[0].includes(`Weaning Survival: N/A`),
       );
@@ -1566,9 +1578,10 @@ Deno.test("ReproductionTrackingConcept - generateReport action", async (t) => {
       // Litters: B1 (Jan) => 1 litter
       // Offspring: 4 (from B1) = 4 total offspring
       // Weaned & survived: OB1-1, OB1-2 => 2
-      // Weaning Survival Rate: (2 / 4) * 100 = 50.00%
+      // New logic: OB1-3 and OB1-4 are alive and not weaned => pending 2
+      // Weaning Survival Rate: (2 / (4 - 2)) * 100 = 100.00%
       const expectedOffspringCount = 4;
-      const expectedWeaningSurvival = "50.00%";
+      const expectedWeaningSurvival = "100.00%";
 
       const updatedReport = await concept.reports.findOne({
         _id: reportName1 as ID,
@@ -1587,6 +1600,11 @@ Deno.test("ReproductionTrackingConcept - generateReport action", async (t) => {
       assertExists(
         updatedReport.results[1].includes(
           `Offspring: ${expectedOffspringCount}`,
+        ),
+      );
+      assertExists(
+        updatedReport.results[1].includes(
+          `To be weaned: 2`,
         ),
       );
       assertExists(
@@ -1664,7 +1682,7 @@ Deno.test("ReproductionTrackingConcept - generateReport action", async (t) => {
       // Litters: A2 (Feb) => 1 litter
       // Offspring: 3 (from A2) = 3 total offspring
       // Weaned & survived: OA2-1, OA2-2, OA2-3 => 3
-      // Weaning Survival Rate: (3 / 3) * 100 = 100.00%
+      // Weaning Survival Rate: (3 / (3 - 0)) * 100 = 100.00%
       const expectedOffspringCount = 3;
       const expectedWeaningSurvival = "100.00%";
 
@@ -1684,6 +1702,11 @@ Deno.test("ReproductionTrackingConcept - generateReport action", async (t) => {
       assertExists(
         updatedReport.results[initialResultsCount].includes(
           `Offspring: ${expectedOffspringCount}`,
+        ),
+      );
+      assertExists(
+        updatedReport.results[initialResultsCount].includes(
+          `To be weaned: 0`,
         ),
       );
       assertExists(
@@ -2147,7 +2170,7 @@ Deno.test("ReproductionTrackingConcept - AI Summary actions", async (t) => {
         "Report summary should initially be empty",
       );
 
-      const result = await concept._aiSummary({ reportName: reportNameAI });
+      const result = await concept.aiSummary({ reportName: reportNameAI });
 
       assertEquals(result.error, undefined);
       assertExists(result.summary, "Summary should be returned");
@@ -2230,7 +2253,7 @@ Deno.test("ReproductionTrackingConcept - AI Summary actions", async (t) => {
       );
       const cachedSummary = report.summary;
 
-      const result = await concept._aiSummary({ reportName: reportNameAI });
+      const result = await concept.aiSummary({ reportName: reportNameAI });
 
       assertEquals(result.error, undefined);
       assertEquals(
@@ -2325,7 +2348,7 @@ Deno.test("ReproductionTrackingConcept - AI Summary actions", async (t) => {
     "should return an error if the report does not exist for AI summary",
     async () => {
       const nonExistentReport = "NonExistentAIReport";
-      const result = await concept._aiSummary({
+      const result = await concept.aiSummary({
         reportName: nonExistentReport,
       });
 

@@ -1,34 +1,46 @@
 import { Collection, Db } from "npm:mongodb";
-import { Empty, ID, UNKNOWN_FATHER_ID } from "@utils/types.ts";
+import { Empty, ID } from "@utils/types.ts";
 import { freshID } from "@utils/database.ts";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI } from "npm:@google/generative-ai";
 
 // Declare collection prefix, use concept name
 const PREFIX = "ReproductionTracking.";
 
 // Generic types of this concept for strong typing of IDs
-type MotherId = ID;
-type LitterId = ID;
-type OffspringId = ID;
-type ReportName = string; // As per spec, report name is a string identifier
+type UserId = ID; // New type for user identifiers
+type MotherId = ID; // User-provided identifier for a mother, unique per user
+type LitterId = ID; // Internal Mongo _id for litters (system-generated)
+type OffspringId = ID; // User-provided identifier for offspring, unique per user
+type ReportName = string; // User-provided report name, unique per user
+
+/**
+ * A special ID to indicate that the father of a litter is unknown or not specified.
+ * This simplifies queries and ensures the `fatherId` field is always present in `Litter` documents.
+ */
+export const UNKNOWN_FATHER_ID = "UNKNOWN_FATHER" as ID;
 
 /**
  * Represents a mother animal in the system.
  * The purpose is to track reproductive outcomes and offspring survivability.
  */
 interface Mother {
-  _id: MotherId; // The ID of the mother animal, provided externally.
+  _id: ID; // System-generated unique ID (Mongo _id)
+  ownerId: UserId; // The ID of the user who owns this mother.
+  externalId: MotherId; // User-provided ID, unique per owner
   notes: string; // Notes about the mother. Stored as "" if not provided.
+  nextLitterNumber: number; // The next sequential number to assign to a litter for this mother.
 }
 
 /**
  * Represents a litter of offspring born to a mother animal.
  * Organizes individual offspring into distinct litters.
  * The `fatherId` will always be present, using `UNKNOWN_FATHER_ID` if not specified.
+ * The `_id` field for a Litter will be `motherId-sequentialNumber`.
  */
 interface Litter {
-  _id: LitterId; // The generated ID for this litter.
-  motherId: MotherId; // Link to the mother of this litter.
+  _id: ID; // System-generated unique ID (Mongo _id)
+  ownerId: UserId; // The ID of the user who owns this litter. Derived from the mother.
+  motherId: MotherId; // Link to the mother via her external (user-provided) ID.
   fatherId: ID; // Link to the father of this litter, or UNKNOWN_FATHER_ID.
   birthDate: Date; // The birth date of the litter.
   reportedLitterSize: number; // The reported number of offspring in the litter.
@@ -39,8 +51,10 @@ interface Litter {
  * Represents an individual offspring, linked to a parent litter.
  */
 interface Offspring {
-  _id: OffspringId; // The ID of the offspring, provided externally.
-  litterId: LitterId; // Link to its parent litter.
+  _id: ID; // System-generated unique ID (Mongo _id)
+  ownerId: UserId; // The ID of the user who owns this offspring. Derived from the litter/mother.
+  litterId: ID; // Link to its parent litter (litter _id)
+  externalId: OffspringId; // User-provided ID for the offspring, unique per owner
   sex: "male" | "female" | "neutered"; // The sex of the offspring.
   notes: string; // Notes about the offspring. Stored as "" if not provided.
   isAlive: boolean; // Indicates if the offspring is currently alive.
@@ -51,9 +65,11 @@ interface Offspring {
  * Represents a generated report on reproductive performance.
  */
 interface Report {
-  _id: ReportName; // The name of the report, used as its identifier.
+  _id: ID; // System-generated unique ID (Mongo _id)
+  ownerId: UserId; // The ID of the user who owns this report.
+  name: ReportName; // User-provided name, unique per owner
   dateGenerated: Date; // The date the report was generated.
-  target: ID[]; // A set of target mother animal IDs for this report.
+  target: ID[]; // Target mother external IDs for this report.
   results: string[]; // A set of results, each represented as a string.
   summary: string; // An AI-generated summary of the report. Defaults to empty string.
 }
@@ -98,28 +114,45 @@ export default class ReproductionTrackingConcept {
     this.reports = this.db.collection(PREFIX + "reports");
   }
 
+  // Normalize incoming dates (Date or ISO string) into Date objects
+  private _toDate(value: Date | string): Date {
+    return value instanceof Date ? value : new Date(value);
+  }
+
   /**
-   * **action** `addMother (motherId: String): (motherId: String)`
+   * **action** `addMother (user: String, motherId: String): (motherId: String)`
    *
-   * **requires** mother is not already in the set of mothers
-   * **effects** mother is added to the set of mothers
+   * **requires** no Mother with the given `motherId` and `user` already exists
+   * **effects** mother is added to the set of mothers. The next litter for this mother will be assigned ID '1'.
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.motherId - The unique identifier for the mother.
    * @returns {{ motherId?: MotherId; error?: string }} The ID of the added mother, or an error.
    */
   async addMother({
+    user,
     motherId,
   }: {
+    user: string;
     motherId: string;
   }): Promise<{ motherId?: MotherId; error?: string }> {
-    const existingMother = await this.mothers.findOne({ _id: motherId as ID });
+    const existingMother = await this.mothers.findOne({
+      externalId: motherId as ID,
+      ownerId: user as UserId,
+    });
     if (existingMother) {
-      return { error: `Mother with ID '${motherId}' already exists.` };
+      return {
+        error:
+          `Mother with ID '${motherId}' already exists for user '${user}'.`,
+      };
     }
 
     const newMother: Mother = {
-      _id: motherId as ID,
+      _id: freshID(),
+      ownerId: user as UserId,
+      externalId: motherId as ID,
       notes: "", // Default to empty string
+      nextLitterNumber: 1, // Initialize for the first litter
     };
 
     await this.mothers.insertOne(newMother);
@@ -127,33 +160,79 @@ export default class ReproductionTrackingConcept {
   }
 
   /**
-   * **action** `removeMother (motherId: String): (motherId: String)`
+   * **action** `removeMother (user: String, motherId: String): (motherId: String)`
    *
-   * **requires** a mother with this ID is in the set of mothers
+   * **requires** a mother with this ID and `user` is in the set of mothers
    * **effects** removes this mother from the set of mothers.
-   * (Associated litters and offspring will have dangling `motherId` references unless syncs are used for cascade deletion).
+   * **Also, removes any litters associated with this mother, and all offspring associated with those litters, all belonging to the same user.**
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.motherId - The unique identifier of the mother to remove.
    * @returns {{ motherId?: MotherId; error?: string }} The ID of the removed mother, or an error.
    */
   async removeMother({
+    user,
     motherId,
   }: {
+    user: string;
     motherId: string;
   }): Promise<{ motherId?: MotherId; error?: string }> {
-    const result = await this.mothers.deleteOne({ _id: motherId as ID });
+    const existingMother = await this.mothers.findOne({
+      externalId: motherId as ID,
+      ownerId: user as UserId,
+    });
+    if (!existingMother) {
+      return {
+        error: `Mother with ID '${motherId}' not found for user '${user}'.`,
+      };
+    }
+
+    // 1. Find all litters associated with this mother and user
+    const littersToDelete = await this.litters.find({
+      motherId: motherId as ID,
+      ownerId: user as UserId,
+    }).toArray();
+    const litterIdsToDelete = littersToDelete.map((litter) => litter._id);
+
+    // 2. Delete all offspring associated with these litters and user
+    if (litterIdsToDelete.length > 0) {
+      await this.offspring.deleteMany({
+        litterId: { $in: litterIdsToDelete },
+        ownerId: user as UserId,
+      });
+    }
+
+    // 3. Delete all litters associated with this mother and user
+    await this.litters.deleteMany({
+      motherId: motherId as ID,
+      ownerId: user as UserId,
+    });
+
+    // 4. Delete the mother herself
+    const result = await this.mothers.deleteOne({
+      _id: existingMother._id,
+      ownerId: user as UserId,
+    });
+
     if (result.deletedCount === 0) {
-      return { error: `Mother with ID '${motherId}' not found.` };
+      // This should ideally not happen if existingMother was found, but as a safeguard.
+      return {
+        error:
+          `Mother with ID '${motherId}' not found for user '${user}' during final deletion.`,
+      };
     }
     return { motherId: motherId as ID };
   }
 
   /**
-   * **action** `recordLitter (motherId: String, fatherId: String?, birthDate: Date, reportedLitterSize: Number, notes: String?): (litterID: String)`
+   * **action** `recordLitter (user: String, motherId: String, fatherId: String?, birthDate: Date, reportedLitterSize: Number, notes: String?): (litterID: String)`
    *
-   * **requires** motherId exists. No litter with same `motherId`, `fatherId`, `birthDate` already exists (to prevent exact duplicates).
-   * **effects** creates a new litter record with the provided information. Also adds the mother to the set of mothers if she isn't there already.
+   * **requires** motherId exists for the given `user`. The generated litter ID (motherId-sequentialNumber) does not already exist for the given `user`.
+   * **effects** Creates a new litter record with the provided information, assigning a sequential ID unique to the mother and user.
+   * Also adds the mother to the set of mothers if she isn't there already for this user, initializing her `nextLitterNumber`.
+   * Increments the `nextLitterNumber` for the mother owned by this user.
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.motherId - The ID of the mother.
    * @param {string} [args.fatherId] - Optional ID of the father.
    * @param {Date} args.birthDate - The birth date of the litter.
@@ -162,70 +241,112 @@ export default class ReproductionTrackingConcept {
    * @returns {{ litterID?: LitterId; error?: string }} The ID of the new litter, or an error.
    */
   async recordLitter({
+    user,
     motherId,
     fatherId,
     birthDate,
     reportedLitterSize,
     notes,
   }: {
+    user: string;
     motherId: string;
     fatherId?: string;
-    birthDate: Date;
+    birthDate: Date | string;
     reportedLitterSize: number;
     notes?: string;
   }): Promise<{ litterID?: LitterId; error?: string }> {
-    // Check if mother exists, if not, add her (as per effects)
-    const existingMother = await this.mothers.findOne({ _id: motherId as ID });
-    if (!existingMother) {
-      const addMotherResult = await this.addMother({ motherId });
+    // Check if mother exists for this user by externalId. If not, add her with default nextLitterNumber: 1
+    let mother = await this.mothers.findOne({
+      externalId: motherId as ID,
+      ownerId: user as UserId,
+    });
+    if (!mother) {
+      const addMotherResult = await this.addMother({ user, motherId });
       if (addMotherResult.error) {
         return {
-          error: `Failed to ensure mother exists: ${addMotherResult.error}`,
+          error:
+            `Failed to ensure mother exists for user '${user}': ${addMotherResult.error}`,
+        };
+      }
+      // Re-fetch mother to get the initialized nextLitterNumber
+      mother = await this.mothers.findOne({
+        externalId: motherId as ID,
+        ownerId: user as UserId,
+      });
+      if (!mother) { // Should not happen if addMother was successful
+        return {
+          error:
+            `Internal error: Mother not found for user '${user}' after creation.`,
         };
       }
     }
 
-    const actualMotherId = motherId as ID;
-    // Use UNKNOWN_FATHER_ID if fatherId is not provided
+    // Ensure nextLitterNumber exists on the mother object (for robustness with old data or if not properly initialized)
+    if (
+      mother.nextLitterNumber === undefined || mother.nextLitterNumber === null
+    ) {
+      mother.nextLitterNumber = 1; // Default if somehow missing or for legacy data
+    }
+
+    const actualMotherId = motherId as ID; // external mother ID
     const actualFatherId: ID = fatherId ? (fatherId as ID) : UNKNOWN_FATHER_ID;
 
-    // Construct filter for exact duplicate litter check
-    const litterFilter = {
-      motherId: actualMotherId,
-      fatherId: actualFatherId, // Now always a specific ID string (either provided or UNKNOWN_FATHER_ID)
-      birthDate: birthDate,
-    };
+    // Remember nextLitterNumber for sequencing, but litter _id will be system-generated now
+    const newLitterNumber = mother.nextLitterNumber;
 
-    const duplicateLitter = await this.litters.findOne(litterFilter);
-    if (duplicateLitter) {
+    // Update mother's nextLitterNumber *before* inserting the litter,
+    // to reserve the number. If litter insertion fails, a number might be skipped.
+    const updatedNextLitterNumber = newLitterNumber + 1;
+    await this.mothers.updateOne(
+      { externalId: actualMotherId, ownerId: user as UserId },
+      { $set: { nextLitterNumber: updatedNextLitterNumber } },
+    );
+
+    // Parse and validate birth date
+    const parsedBirthDate = this._toDate(birthDate);
+    if (isNaN(parsedBirthDate.getTime())) {
+      return { error: "Invalid birth date provided." };
+    }
+
+    // Prevent duplicate litters for the same mother/father/date
+    const duplicateCombo = await this.litters.findOne({
+      ownerId: user as UserId,
+      motherId: actualMotherId,
+      fatherId: actualFatherId,
+      birthDate: parsedBirthDate,
+    });
+    if (duplicateCombo) {
+      const fatherText = actualFatherId === UNKNOWN_FATHER_ID
+        ? "none"
+        : actualFatherId;
       return {
-        error: `A litter with mother ${motherId}, father ${
-          fatherId || "none"
-        }, and birth date ${birthDate.toISOString()} already exists.`,
+        error:
+          `A litter with mother ${actualMotherId}, father ${fatherText}, and birth date ${parsedBirthDate.toISOString()} already exists for user '${user}'.`,
       };
     }
 
-    const newLitterId = freshID();
     const newLitter: Litter = {
-      _id: newLitterId,
+      _id: freshID(),
+      ownerId: user as UserId, // Assign ownerId to the litter
       motherId: actualMotherId,
-      fatherId: actualFatherId, // Store the constant or the provided ID
-      birthDate,
+      fatherId: actualFatherId,
+      birthDate: parsedBirthDate,
       reportedLitterSize,
       notes: notes ?? "", // Optional notes should default to an empty string if not provided
     };
     await this.litters.insertOne(newLitter);
-    return { litterID: newLitterId };
+    return { litterID: newLitter._id };
   }
 
   /**
-   * **action** `updateLitter (litterId: String, motherId: String?, fatherId: String?, birthDate: Date?, reportedLitterSize: Number?, notes: String?): (litterID: String)`
+   * **action** `updateLitter (user: String, litterId: String, motherId: String?, fatherId: String?, birthDate: Date?, reportedLitterSize: Number?, notes: String?): (litterID: String)`
    *
-   * **requires** `litterId` exists
-   * **effects** Updates any given information about the litter. If `motherId` is changed, ensures the new mother exists.
+   * **requires** `litterId` exists for the given `user`. `motherId` cannot be changed for an existing litter.
+   * **effects** Updates any given information about the litter.
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.litterId - The ID of the litter to update.
-   * @param {string} [args.motherId] - New ID of the mother.
+   * @param {string} [args.motherId] - New ID of the mother (not allowed to change).
    * @param {string} [args.fatherId] - New optional ID of the father.
    * @param {Date} [args.birthDate] - New birth date.
    * @param {number} [args.reportedLitterSize] - New reported litter size.
@@ -233,6 +354,7 @@ export default class ReproductionTrackingConcept {
    * @returns {{ litterID?: LitterId; error?: string }} The ID of the updated litter, or an error.
    */
   async updateLitter({
+    user,
     litterId,
     motherId,
     fatherId,
@@ -240,35 +362,36 @@ export default class ReproductionTrackingConcept {
     reportedLitterSize,
     notes,
   }: {
+    user: string;
     litterId: string;
     motherId?: string;
     fatherId?: string;
-    birthDate?: Date;
+    birthDate?: Date | string;
     reportedLitterSize?: number;
     notes?: string;
   }): Promise<{ litterID?: LitterId; error?: string }> {
-    const existingLitter = await this.litters.findOne({ _id: litterId as ID });
+    const existingLitter = await this.litters.findOne({
+      _id: litterId as ID,
+      ownerId: user as UserId,
+    });
     if (!existingLitter) {
-      return { error: `Litter with ID '${litterId}' not found.` };
+      return {
+        error: `Litter with ID '${litterId}' not found for user '${user}'.`,
+      };
+    }
+
+    // Restriction: Cannot change motherId for an existing litter.
+    // Changing motherId would require re-assigning the litter's primary ID (e.g., from 'MotherA-X' to 'MotherB-Y'),
+    // which is a complex operation equivalent to deleting and re-creating the litter and its offspring,
+    // and is beyond a simple 'updateLitter' action.
+    if (motherId !== undefined && motherId !== existingLitter.motherId) {
+      return {
+        error:
+          `Cannot change 'motherId' for an existing litter with ID '${litterId}'. Litter IDs are tied to their mother's sequence.`,
+      };
     }
 
     const updateFields: Partial<Litter> = {};
-    if (motherId !== undefined) {
-      const existingMother = await this.mothers.findOne({
-        _id: motherId as ID,
-      });
-      if (!existingMother) {
-        // Ensure new mother exists as per effects
-        const addMotherResult = await this.addMother({ motherId });
-        if (addMotherResult.error) {
-          return {
-            error:
-              `Failed to ensure new mother for litter exists: ${addMotherResult.error}`,
-          };
-        }
-      }
-      updateFields.motherId = motherId as ID;
-    }
     // Handle fatherId update: if explicitly provided as undefined, set to UNKNOWN_FATHER_ID.
     // Otherwise, use the provided fatherId. If not in args, don't change it.
     if (Object.prototype.hasOwnProperty.call(arguments[0], "fatherId")) {
@@ -278,7 +401,13 @@ export default class ReproductionTrackingConcept {
         updateFields.fatherId = fatherId as ID;
       }
     }
-    if (birthDate !== undefined) updateFields.birthDate = birthDate;
+    if (birthDate !== undefined) {
+      const parsed = this._toDate(birthDate);
+      if (isNaN(parsed.getTime())) {
+        return { error: "Invalid birth date provided." };
+      }
+      updateFields.birthDate = parsed;
+    }
     if (reportedLitterSize !== undefined) {
       updateFields.reportedLitterSize = reportedLitterSize;
     }
@@ -289,22 +418,28 @@ export default class ReproductionTrackingConcept {
     }
 
     const result = await this.litters.updateOne(
-      { _id: litterId as ID },
+      { _id: litterId as ID, ownerId: user as UserId },
       { $set: updateFields },
     );
 
     if (result.matchedCount === 0) {
-      return { error: `Litter with ID '${litterId}' not found for update.` };
+      // This case indicates that the litter might have been deleted by another operation
+      // after the findOne but before the updateOne, or ownerId/litterId didn't match.
+      return {
+        error:
+          `Litter with ID '${litterId}' not found for user '${user}' for update.`,
+      };
     }
     return { litterID: litterId as ID };
   }
 
   /**
-   * **action** `recordOffspring (litterId: String, offspringId: String, sex: Enum [male, female, neutered], notes: String?): (offspringID: String)`
+   * **action** `recordOffspring (user: String, litterId: String, offspringId: String, sex: Enum [male, female, neutered], notes: String?): (offspringID: String)`
    *
-   * **requires** `litterId` exists and `offspringId` does not exist.
-   * **effects** creates an individual offspring record linked to the specified litter.
+   * **requires** `litterId` exists for the given `user` and `offspringId` does not exist for the given `user`.
+   * **effects** creates an individual offspring record linked to the specified litter, owned by the user.
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.litterId - The ID of the parent litter.
    * @param {string} args.offspringId - The unique identifier for the offspring.
    * @param {'male' | 'female' | 'neutered'} args.sex - The sex of the offspring.
@@ -312,181 +447,250 @@ export default class ReproductionTrackingConcept {
    * @returns {{ offspringID?: OffspringId; error?: string }} The ID of the new offspring, or an error.
    */
   async recordOffspring({
+    user,
     litterId,
     offspringId,
     sex,
     notes,
   }: {
+    user: string;
     litterId: string;
     offspringId: string;
     sex: "male" | "female" | "neutered";
     notes?: string;
   }): Promise<{ offspringID?: OffspringId; error?: string }> {
-    // Check requires: litterId exists
-    const existingLitter = await this.litters.findOne({ _id: litterId as ID });
+    // Check requires: litterId exists for this user
+    const existingLitter = await this.litters.findOne({
+      _id: litterId as ID,
+      ownerId: user as UserId,
+    });
     if (!existingLitter) {
-      return { error: `Litter with ID '${litterId}' not found.` };
+      return {
+        error: `Litter with ID '${litterId}' not found for user '${user}'.`,
+      };
     }
 
-    // Check requires: offspringId does not exist
+    // Check requires: offspring externalId does not exist for this user
     const existingOffspring = await this.offspring.findOne({
-      _id: offspringId as ID,
+      externalId: offspringId as ID,
+      ownerId: user as UserId,
     });
     if (existingOffspring) {
-      return { error: `Offspring with ID '${offspringId}' already exists.` };
+      return {
+        error:
+          `Offspring with ID '${offspringId}' already exists for user '${user}'.`,
+      };
     }
 
     const newOffspring: Offspring = {
-      _id: offspringId as ID,
+      _id: freshID(),
+      ownerId: user as UserId, // Assign ownerId to the offspring
       litterId: litterId as ID,
+      externalId: offspringId as ID,
       sex,
       notes: notes ?? "", // Optional notes should default to an empty string if not provided
       isAlive: true, // New offspring are assumed alive
       survivedTillWeaning: false, // Not yet weaned
     };
     await this.offspring.insertOne(newOffspring);
-    return { offspringID: newOffspring._id };
+    return { offspringID: newOffspring.externalId };
   }
 
   /**
-   * **action** `updateOffspring (offspringId: String, litterId: String?, sex: Enum?, notes: String?): (offspringID: String)`
+   * **action** `updateOffspring (user: String, oldOffspringId: String, newOffspringId: String?, litterId: String?, sex: Enum?, notes: String?): (offspringID: String)`
    *
-   * **requires** `offspringId` exists.
-   * **effects** Updates any given information about the offspring. If `litterId` is changed, ensures the new litter exists.
+   * **requires** `oldOffspringId` exists for the given `user`. If `newOffspringId` is provided and different from `oldOffspringId`,
+   * it must not already exist for the given `user`. If `litterId` is changed, the new litter must exist for the same `user`.
+   * **effects** Finds the offspring by `oldOffspringId` and `user`. If `newOffspringId` is provided and different,
+   * renames the offspring's ID to `newOffspringId` (by deleting the old record and inserting a new one
+   * with the updated ID and other fields). Otherwise, updates any other given information about the offspring.
    * @param {object} args - The action arguments.
-   * @param {string} args.offspringId - The ID of the offspring to update.
+   * @param {string} args.user - The ID of the user performing the action.
+   * @param {string} args.oldOffspringId - The current ID of the offspring to update.
+   * @param {string} [args.newOffspringId] - The optional new ID for the offspring. If not provided, `oldOffspringId` is used.
    * @param {string} [args.litterId] - New ID of the parent litter.
    * @param {'male' | 'female' | 'neutered'} [args.sex] - New sex of the offspring.
    * @param {string} [args.notes] - New optional notes.
-   * @returns {{ offspringID?: OffspringId; error?: string }} The ID of the updated offspring, or an error.
+   * @returns {{ offspringID?: OffspringId; error?: string }} The final ID of the updated offspring, or an error.
    */
   async updateOffspring({
-    offspringId,
+    user,
+    oldOffspringId,
+    newOffspringId,
     litterId,
     sex,
     notes,
   }: {
-    offspringId: string;
+    user: string;
+    oldOffspringId: string;
+    newOffspringId?: string;
     litterId?: string;
     sex?: "male" | "female" | "neutered";
     notes?: string;
   }): Promise<{ offspringID?: OffspringId; error?: string }> {
+    // Find the offspring by externalId and owner
     const existingOffspring = await this.offspring.findOne({
-      _id: offspringId as ID,
+      externalId: oldOffspringId as ID,
+      ownerId: user as UserId,
     });
     if (!existingOffspring) {
-      return { error: `Offspring with ID '${offspringId}' not found.` };
+      return {
+        error:
+          `Offspring with ID '${oldOffspringId}' not found for user '${user}'.`,
+      };
     }
 
-    const updateFields: Partial<Offspring> = {};
+    // Build update set
+    const updateFields: Partial<Offspring> & { externalId?: OffspringId } = {};
     if (litterId !== undefined) {
       const existingLitter = await this.litters.findOne({
         _id: litterId as ID,
+        ownerId: user as UserId,
       });
       if (!existingLitter) {
-        return { error: `New litter with ID '${litterId}' not found.` }; // No auto-creation for litter here, must exist.
+        return {
+          error:
+            `New litter with ID '${litterId}' not found for user '${user}'.`,
+        };
       }
       updateFields.litterId = litterId as ID;
     }
     if (sex !== undefined) updateFields.sex = sex;
-    // Handle notes update: if explicitly provided as undefined, set to empty string.
-    // If not in args, don't change it.
     if (Object.prototype.hasOwnProperty.call(arguments[0], "notes")) {
-      updateFields.notes = notes ?? ""; // Optional notes should default to an empty string if not provided
+      updateFields.notes = notes ?? "";
+    }
+
+    // Handle external ID change
+    const finalNewOffspringId: OffspringId =
+      (newOffspringId ?? oldOffspringId) as OffspringId;
+    if (
+      newOffspringId !== undefined &&
+      finalNewOffspringId !== oldOffspringId as ID
+    ) {
+      const conflict = await this.offspring.findOne({
+        externalId: finalNewOffspringId,
+        ownerId: user as UserId,
+      });
+      if (conflict) {
+        return {
+          error:
+            `New offspring ID '${finalNewOffspringId}' already exists for user '${user}'. Cannot rename.`,
+        };
+      }
+      updateFields.externalId = finalNewOffspringId; // extend update with externalId
+    }
+
+    if (Object.keys(updateFields).length === 0) {
+      return { offspringID: finalNewOffspringId };
     }
 
     const result = await this.offspring.updateOne(
-      { _id: offspringId as ID },
+      { externalId: oldOffspringId as ID, ownerId: user as UserId },
       { $set: updateFields },
     );
-
     if (result.matchedCount === 0) {
       return {
-        error: `Offspring with ID '${offspringId}' not found for update.`,
+        error:
+          `Offspring with ID '${oldOffspringId}' not found for user '${user}' for update.`,
       };
     }
-    return { offspringID: offspringId as ID };
+    return { offspringID: finalNewOffspringId };
   }
 
   /**
-   * **action** `recordWeaning (offspringId: String): (offspringID: String)`
+   * **action** `recordWeaning (user: String, offspringId: String): (offspringID: String)`
    *
-   * **requires** offspring is in the set of offspring and is alive
+   * **requires** offspring with `offspringId` exists for `user` and is alive
    * **effects** Sets `survivedTillWeaning` to be true for the specified offspring
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.offspringId - The ID of the offspring to mark as weaned.
    * @returns {{ offspringID?: OffspringId; error?: string }} The ID of the offspring, or an error.
    */
   async recordWeaning({
+    user,
     offspringId,
   }: {
+    user: string;
     offspringId: string;
   }): Promise<{ offspringID?: OffspringId; error?: string }> {
     const existingOffspring = await this.offspring.findOne({
-      _id: offspringId as ID,
+      externalId: offspringId as ID,
+      ownerId: user as UserId,
     });
     if (!existingOffspring) {
-      return { error: `Offspring with ID '${offspringId}' not found.` };
+      return {
+        error:
+          `Offspring with ID '${offspringId}' not found for user '${user}'.`,
+      };
     }
     if (!existingOffspring.isAlive) {
       return {
         error:
-          `Offspring with ID '${offspringId}' is not alive and cannot be weaned.`,
+          `Offspring with ID '${offspringId}' for user '${user}' is not alive and cannot be weaned.`,
       };
     }
 
     await this.offspring.updateOne(
-      { _id: offspringId as ID },
+      { externalId: offspringId as ID, ownerId: user as UserId },
       { $set: { survivedTillWeaning: true } },
     );
     return { offspringID: offspringId as ID };
   }
 
   /**
-   * **action** `recordDeath (offspringId: String): (offspringId: String)`
+   * **action** `recordDeath (user: String, offspringId: String): (offspringId: String)`
    *
-   * **requires** offspring is in the set of offspring and is currently living
+   * **requires** offspring with `offspringId` exists for `user` and is currently living
    * **effects** Sets the `isAlive` flag of this offspring to false.
    *            The `survivedTillWeaning` status is preserved as it represents a past milestone.
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.offspringId - The ID of the offspring to mark as deceased.
    * @returns {{ offspringId?: OffspringId; error?: string }} The ID of the offspring, or an error.
    */
   async recordDeath({
+    user,
     offspringId,
   }: {
+    user: string;
     offspringId: string;
   }): Promise<{ offspringId?: OffspringId; error?: string }> {
     const existingOffspring = await this.offspring.findOne({
-      _id: offspringId as ID,
+      externalId: offspringId as ID,
+      ownerId: user as UserId,
     });
     if (!existingOffspring) {
-      return { error: `Offspring with ID '${offspringId}' not found.` };
+      return {
+        error:
+          `Offspring with ID '${offspringId}' not found for user '${user}'.`,
+      };
     }
     if (!existingOffspring.isAlive) {
       return {
         error:
-          `Offspring with ID '${offspringId}' is already marked as deceased.`,
+          `Offspring with ID '${offspringId}' for user '${user}' is already marked as deceased.`,
       };
     }
 
     // Corrected logic: only set isAlive to false.
     // 'survivedTillWeaning' is a milestone and should not be revoked upon later death.
     await this.offspring.updateOne(
-      { _id: offspringId as ID },
+      { externalId: offspringId as ID, ownerId: user as UserId },
       { $set: { isAlive: false } },
     );
     return { offspringId: offspringId as ID };
   }
 
   /**
-   * **action** `generateReport (target: String, startDateRange: Date, endDateRange: Date, name: String): (results: string[])`
+   * **action** `generateReport (user: String, target: String, startDateRange: Date, endDateRange: Date, name: String): (results: string[])`
    *
-   * **requires** target animal is in the set of mothers
-   * **effects** If no report with this name exists then generate a report on the reproductive performance
+   * **requires** target animal is in the set of mothers for the given `user`.
+   * **effects** If no report with this name exists for this `user` then generate a report on the reproductive performance
    * of the given animal within the specified date range, otherwise add the reproductive performance
-   * of this animal to the existing report.
+   * of this animal to the existing report for this `user`.
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.target - The ID of the mother animal for which to generate the report.
    * @param {Date} args.startDateRange - The start date for data collection in the report.
    * @param {Date} args.endDateRange - The end date for data collection in the report.
@@ -494,29 +698,48 @@ export default class ReproductionTrackingConcept {
    * @returns {{ results?: string[]; error?: string }} The results of the generated/updated report, or an error.
    */
   async generateReport({
+    user,
     target,
     startDateRange,
     endDateRange,
     name,
   }: {
+    user: string;
     target: string;
-    startDateRange: Date;
-    endDateRange: Date;
+    startDateRange: Date | string;
+    endDateRange: Date | string;
     name: string;
   }): Promise<{ results?: string[]; error?: string }> {
-    // Check requires: target mother exists
-    const existingMother = await this.mothers.findOne({ _id: target as ID });
+    // Check requires: target mother exists for this user
+    const existingMother = await this.mothers.findOne({
+      externalId: target as ID,
+      ownerId: user as UserId,
+    });
     if (!existingMother) {
-      return { error: `Target mother with ID '${target}' not found.` };
+      return {
+        error:
+          `Target mother with ID '${target}' not found for user '${user}'.`,
+      };
+    }
+
+    // Parse and validate date range
+    const start = this._toDate(startDateRange);
+    const end = this._toDate(endDateRange);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return { error: "Invalid date range provided." };
+    }
+    if (start > end) {
+      return { error: "Start date cannot be after end date." };
     }
 
     // --- Start: Actual report generation logic for the specific target and date range ---
     const relevantLitters = await this.litters.find({
       motherId: target as ID,
-      birthDate: { $gte: startDateRange, $lte: endDateRange },
+      ownerId: user as UserId,
+      birthDate: { $gte: start, $lte: end },
     }).toArray();
 
-    let littersCount = relevantLitters.length;
+    const littersCount = relevantLitters.length;
     let totalOffspringCount = 0;
     let survivedWeaningCount = 0;
 
@@ -524,6 +747,7 @@ export default class ReproductionTrackingConcept {
       const litterIds = relevantLitters.map((l) => l._id);
       const relevantOffspring = await this.offspring.find({
         litterId: { $in: litterIds },
+        ownerId: user as UserId,
       }).toArray();
 
       totalOffspringCount = relevantOffspring.length;
@@ -534,7 +758,7 @@ export default class ReproductionTrackingConcept {
 
     // This string represents the "reproductive performance" for this specific target and date range.
     const newPerformanceEntry =
-      `Performance for ${target} (${startDateRange.toDateString()} to ${endDateRange.toDateString()}): ` +
+      `Performance for ${target} (${start.toDateString()} to ${end.toDateString()}): ` +
       `Litters: ${littersCount}, Offspring: ${totalOffspringCount}, ` +
       `Weaning Survival: ${
         totalOffspringCount > 0
@@ -544,8 +768,10 @@ export default class ReproductionTrackingConcept {
       }`;
     // --- End: Actual report generation logic ---
 
-    const reportNameId = name as ReportName;
-    const existingReport = await this.reports.findOne({ _id: reportNameId });
+    const existingReport = await this.reports.findOne({
+      ownerId: user as UserId,
+      name: name as ReportName,
+    });
     let currentReportResults: string[] = [];
     let currentReportTargets: ID[] = [];
 
@@ -563,7 +789,7 @@ export default class ReproductionTrackingConcept {
       }
 
       await this.reports.updateOne(
-        { _id: reportNameId },
+        { ownerId: user as UserId, name: name as ReportName },
         {
           $set: {
             dateGenerated: new Date(),
@@ -576,7 +802,9 @@ export default class ReproductionTrackingConcept {
     } else {
       // Create new report
       const newReport: Report = {
-        _id: reportNameId,
+        _id: freshID(),
+        ownerId: user as UserId, // Assign ownerId to the report
+        name: name as ReportName,
         dateGenerated: new Date(),
         target: [target as ID], // Initialize with the first target
         results: [newPerformanceEntry], // Initialize with the first performance entry
@@ -591,85 +819,107 @@ export default class ReproductionTrackingConcept {
   }
 
   /**
-   * **action** `renameReport (oldName: String, newName: String): (newName: String)`
+   * **action** `renameReport (user: String, oldName: String, newName: String): (newName: String)`
    *
-   * **requires** oldName of report exists
-   * **effects** renames the specified report
+   * **requires** oldName of report exists for the given `user`. No report with `newName` exists for the given `user`.
+   * **effects** renames the specified report for the given `user`.
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.oldName - The current name of the report.
    * @param {string} args.newName - The new name for the report.
    * @returns {{ newName?: ReportName; error?: string }} The new name of the report, or an error.
    */
   async renameReport({
+    user,
     oldName,
     newName,
   }: {
+    user: string;
     oldName: string;
     newName: string;
   }): Promise<{ newName?: ReportName; error?: string }> {
     const existingReport = await this.reports.findOne({
-      _id: oldName as ReportName,
+      ownerId: user as UserId,
+      name: oldName as ReportName,
     });
     if (!existingReport) {
-      return { error: `Report with name '${oldName}' not found.` };
+      return {
+        error: `Report with name '${oldName}' not found for user '${user}'.`,
+      };
     }
     const newNameExists = await this.reports.findOne({
-      _id: newName as ReportName,
+      ownerId: user as UserId,
+      name: newName as ReportName,
     });
     if (newNameExists) {
-      return { error: `Report with new name '${newName}' already exists.` };
+      return {
+        error:
+          `Report with new name '${newName}' already exists for user '${user}'.`,
+      };
     }
-
-    // Since _id is the primary key (report name), we have to delete and re-insert
-    // or use a transaction if available and desired for atomicity, but for a simple rename this is okay.
-    // In a real-world scenario with strong consistency needs, one might prefer a transaction or disallow _id changes directly.
-    await this.reports.deleteOne({ _id: oldName as ReportName });
-    const updatedReport = { ...existingReport, _id: newName as ReportName };
-    await this.reports.insertOne(updatedReport);
-
+    // Simple update of the name field
+    const updateRes = await this.reports.updateOne(
+      { ownerId: user as UserId, name: oldName as ReportName },
+      { $set: { name: newName as ReportName } },
+    );
+    if (updateRes.matchedCount === 0) {
+      return {
+        error: `Report with name '${oldName}' not found for user '${user}'.`,
+      };
+    }
     return { newName: newName as ReportName };
   }
 
   /**
-   * **query** `_viewReport (reportName: String): (Results: String)`
+   * **query** `_viewReport (user: String, reportName: String): (Results: String)`
    *
-   * **requires** report with the given name exists
+   * **requires** report with the given name exists for the given `user`
    * **effects** returns results of the report
    * @param {object} args - The query arguments.
+   * @param {string} args.user - The ID of the user performing the query.
    * @param {string} args.reportName - The name of the report to view.
    * @returns {{ results?: string[]; error?: string }} The results of the report, or an error.
    */
   async _viewReport({
+    user,
     reportName,
   }: {
+    user: string;
     reportName: string;
   }): Promise<{ results?: string[]; error?: string }> {
     const report = await this.reports.findOne({
-      _id: reportName as ReportName,
+      ownerId: user as UserId,
+      name: reportName as ReportName,
     });
     if (!report) {
-      return { error: `Report with name '${reportName}' not found.` };
+      return {
+        error: `Report with name '${reportName}' not found for user '${user}'.`,
+      };
     }
     return { results: report.results };
   }
 
   /**
-   * **action** `deleteReport (reportName: String)`
+   * **action** `deleteReport (user: String, reportName: String)`
    *
-   * **requires** report exists
-   * **effects** remove the report from the system
+   * **requires** report exists for the given `user`
+   * **effects** remove the report from the system for the given `user`
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.reportName - The name of the report to delete.
    * @returns {Empty | { error: string }} An empty object on success, or an error.
    */
   async deleteReport(
-    { reportName }: { reportName: string },
+    { user, reportName }: { user: string; reportName: string },
   ): Promise<Empty | { error: string }> {
     const result = await this.reports.deleteOne({
-      _id: reportName as ReportName,
+      ownerId: user as UserId,
+      name: reportName as ReportName,
     });
     if (result.deletedCount === 0) {
-      return { error: `Report with name '${reportName}' not found.` };
+      return {
+        error: `Report with name '${reportName}' not found for user '${user}'.`,
+      };
     }
     return {};
   }
@@ -716,7 +966,7 @@ Mark records as a potential record error if they may include a typo or if the va
 Absolutely ensure that every animal or mother you think might have a record error is included in the 'potentialRecordErrors' array—no exceptions. If you mention or suspect a record error for an animal or mother in your analysis, their ID must appear in 'potentialRecordErrors'.
 
 Here is the report data:
-Report Name: ${report._id}
+Report Name: ${report.name}
 Generated Date: ${report.dateGenerated.toISOString()}
 Target Mothers: ${report.target.join(", ")}
 Report Entries:
@@ -779,26 +1029,32 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
   }
 
   /**
-   * **query** `_aiSummary (reportName: String): (summary: String)`
+   * **query** `_aiSummary (user: String, reportName: String): (summary: String)`
    *
-   * **requires** report exists
+   * **requires** report exists for the given `user`
    * **effects** The AI generates a summary of the report, highlighting key takeaways
    * and trends shown in the report, and saves it for future viewing.
    * If a summary already exists, it is returned without calling the AI.
    * @param {object} args - The query arguments.
+   * @param {string} args.user - The ID of the user performing the query.
    * @param {string} args.reportName - The name of the report to summarize.
    * @returns {{ summary?: string; error?: string }} The AI-generated summary (as a stringified JSON), or an error.
    */
   async _aiSummary({
+    user,
     reportName,
   }: {
+    user: string;
     reportName: string;
   }): Promise<{ summary?: string; error?: string }> {
     const report = await this.reports.findOne({
-      _id: reportName as ReportName,
+      ownerId: user as UserId,
+      name: reportName as ReportName,
     });
     if (!report) {
-      return { error: `Report with name '${reportName}' not found.` };
+      return {
+        error: `Report with name '${reportName}' not found for user '${user}'.`,
+      };
     }
 
     // New: If a summary already exists, return it immediately to avoid redundant AI calls.
@@ -812,41 +1068,53 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
 
       // Save the generated summary back to the report
       await this.reports.updateOne(
-        { _id: reportName as ReportName },
+        { ownerId: user as UserId, name: reportName as ReportName },
         { $set: { summary: generatedSummary } },
       );
 
       return { summary: generatedSummary };
-    } catch (llmError: any) {
-      console.error("Error generating AI summary:", llmError);
+    } catch (llmError: unknown) {
+      console.error(
+        `Error generating AI summary for user '${user}' report '${reportName}':`,
+        llmError,
+      );
+      const message =
+        llmError && typeof llmError === "object" && "message" in llmError
+          ? String((llmError as { message?: unknown }).message)
+          : "Unknown LLM error";
       return {
-        error: `Failed to generate AI summary: ${
-          llmError.message || "Unknown LLM error"
-        }`,
+        error:
+          `Failed to generate AI summary for user '${user}' report '${reportName}': ${message}`,
       };
     }
   }
 
   /**
-   * **action** `regenerateAISummary (reportName: String): (summary: String)`
+   * **action** `regenerateAISummary (user: String, reportName: String): (summary: String)`
    *
-   * **requires** report exists
+   * **requires** report exists for the given `user`
    * **effects** Forces the AI to generate a new summary of the report,
    * overwriting any existing summary, and saves it for future viewing.
    * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
    * @param {string} args.reportName - The name of the report to re-summarize.
    * @returns {{ summary?: string; error?: string }} The newly AI-generated summary (as a stringified JSON), or an error.
    */
   async regenerateAISummary({
+    user,
     reportName,
   }: {
+    user: string;
     reportName: string;
   }): Promise<{ summary?: string; error?: string }> {
     const report = await this.reports.findOne({
-      _id: reportName as ReportName,
+      ownerId: user as UserId,
+      name: reportName as ReportName,
     });
     if (!report) {
-      return { error: `Report with name '${reportName}' not found.` };
+      return {
+        error: `Report with name '${reportName}' not found for user '${user}'.`,
+      };
     }
 
     // Always generate a new summary, overwriting any existing one
@@ -855,18 +1123,216 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
 
       // Save the generated summary back to the report
       await this.reports.updateOne(
-        { _id: reportName as ReportName },
+        { ownerId: user as UserId, name: reportName as ReportName },
         { $set: { summary: generatedSummary } },
       );
 
       return { summary: generatedSummary };
-    } catch (llmError: any) {
-      console.error("Error regenerating AI summary:", llmError);
+    } catch (llmError: unknown) {
+      console.error(
+        `Error regenerating AI summary for user '${user}' report '${reportName}':`,
+        llmError,
+      );
+      const message =
+        llmError && typeof llmError === "object" && "message" in llmError
+          ? String((llmError as { message?: unknown }).message)
+          : "Unknown LLM error";
       return {
-        error: `Failed to regenerate AI summary: ${
-          llmError.message || "Unknown LLM error"
-        }`,
+        error:
+          `Failed to regenerate AI summary for user '${user}' report '${reportName}': ${message}`,
       };
+    }
+  }
+
+  /**
+   * **query** `_listMothers (user: String): (mother: Mother)`
+   *
+   * **requires** true
+   * **effects** Returns a list of all mother animals owned by the specified user.
+   * @param {object} args - The query arguments.
+   * @param {string} args.user - The ID of the user performing the query.
+   * @returns {{ mother?: Mother[]; error?: string }} An array of mother objects, or an error.
+   */
+  async _listMothers({
+    user,
+  }: {
+    user: string;
+  }): Promise<{ mother?: Mother[]; error?: string }> {
+    try {
+      const mothers = await this.mothers.find({ ownerId: user as UserId })
+        .project({
+          _id: 1,
+          externalId: 1,
+          notes: 1,
+          nextLitterNumber: 1,
+          ownerId: 1,
+        })
+        .toArray();
+      // Ensure we return an array of objects matching the Mother interface structure
+      return {
+        mother: mothers.map((m) => ({
+          _id: m._id,
+          ownerId: m.ownerId,
+          externalId: (m as Mother).externalId,
+          notes: m.notes,
+          nextLitterNumber: m.nextLitterNumber,
+        })),
+      };
+    } catch (e: unknown) {
+      const message = e && typeof e === "object" && "message" in e
+        ? String((e as { message?: unknown }).message)
+        : "Unknown error";
+      return {
+        error: `Failed to list mothers for user '${user}': ${message}`,
+      };
+    }
+  }
+
+  /**
+   * **query** `_listLittersByMother (user: String, motherId: String): (litter: Litter)`
+   *
+   * **requires** `motherId` exists for the given `user`
+   * **effects** Returns a list of all litters for the specified mother, owned by the specified user.
+   * @param {object} args - The query arguments.
+   * @param {string} args.user - The ID of the user performing the query.
+   * @param {string} args.motherId - The ID of the mother whose litters to list.
+   * @returns {{ litter?: Litter[]; error?: string }} An array of litter objects, or an error.
+   */
+  async _listLittersByMother({
+    user,
+    motherId,
+  }: {
+    user: string;
+    motherId: string;
+  }): Promise<{ litter?: Litter[]; error?: string }> {
+    // Check requires: motherId exists for this user
+    const existingMother = await this.mothers.findOne({
+      externalId: motherId as ID,
+      ownerId: user as UserId,
+    });
+    if (!existingMother) {
+      return {
+        error: `Mother with ID '${motherId}' not found for user '${user}'.`,
+      };
+    }
+
+    try {
+      const litters = await this.litters.find({
+        motherId: motherId as ID,
+        ownerId: user as UserId,
+      })
+        .toArray();
+      return {
+        litter: litters.map((l) => ({
+          _id: l._id,
+          ownerId: l.ownerId,
+          motherId: l.motherId,
+          fatherId: l.fatherId,
+          birthDate: l.birthDate,
+          reportedLitterSize: l.reportedLitterSize,
+          notes: l.notes,
+        })),
+      };
+    } catch (e: unknown) {
+      const message = e && typeof e === "object" && "message" in e
+        ? String((e as { message?: unknown }).message)
+        : "Unknown error";
+      return {
+        error:
+          `Failed to list litters for mother '${motherId}' for user '${user}': ${message}`,
+      };
+    }
+  }
+
+  /**
+   * **query** `_listOffspringByLitter (user: String, litterId: String): (offspring: Offspring)`
+   *
+   * **requires** `litterId` exists for the given `user`
+   * **effects** Returns a list of all offspring linked to the specified litter, owned by the specified user.
+   * @param {object} args - The query arguments.
+   * @param {string} args.user - The ID of the user performing the query.
+   * @param {string} args.litterId - The ID of the parent litter.
+   * @returns {{ offspring?: Offspring[]; error?: string }} An array of offspring objects, or an error.
+   */
+  async _listOffspringByLitter({
+    user,
+    litterId,
+  }: {
+    user: string;
+    litterId: string;
+  }): Promise<{ offspring?: Offspring[]; error?: string }> {
+    // Check requires: litterId exists for this user
+    const existingLitter = await this.litters.findOne({
+      _id: litterId as ID,
+      ownerId: user as UserId,
+    });
+    if (!existingLitter) {
+      return {
+        error: `Litter with ID '${litterId}' not found for user '${user}'.`,
+      };
+    }
+
+    try {
+      const offspringList = await this.offspring.find({
+        litterId: litterId as ID,
+        ownerId: user as UserId,
+      }).toArray();
+      return {
+        offspring: offspringList.map((o) => ({
+          _id: o._id,
+          ownerId: o.ownerId,
+          litterId: o.litterId,
+          externalId: o.externalId,
+          sex: o.sex,
+          notes: o.notes,
+          isAlive: o.isAlive,
+          survivedTillWeaning: o.survivedTillWeaning,
+        })),
+      };
+    } catch (e: unknown) {
+      const message = e && typeof e === "object" && "message" in e
+        ? String((e as { message?: unknown }).message)
+        : "Unknown error";
+      return {
+        error:
+          `Failed to list offspring for litter '${litterId}' for user '${user}': ${message}`,
+      };
+    }
+  }
+
+  /**
+   * **query** `_listReports (user: String): (report: Report)`
+   *
+   * **requires** true
+   * **effects** Returns a list of all reports owned by the specified user.
+   * @param {object} args - The query arguments.
+   * @param {string} args.user - The ID of the user performing the query.
+   * @returns {{ report?: Report[]; error?: string }} An array of report objects, or an error.
+   */
+  async _listReports({
+    user,
+  }: {
+    user: string;
+  }): Promise<{ report?: Report[]; error?: string }> {
+    try {
+      const reports = await this.reports.find({ ownerId: user as UserId })
+        .toArray();
+      return {
+        report: reports.map((r) => ({
+          _id: r._id,
+          ownerId: r.ownerId,
+          name: r.name,
+          dateGenerated: r.dateGenerated,
+          target: r.target,
+          results: r.results,
+          summary: r.summary,
+        })),
+      };
+    } catch (e: unknown) {
+      const message = e && typeof e === "object" && "message" in e
+        ? String((e as { message?: unknown }).message)
+        : "Unknown error";
+      return { error: `Failed to list reports for user '${user}': ${message}` };
     }
   }
 }
