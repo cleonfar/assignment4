@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "@google/genai": "^1.25.0",
-    "@google/generative-ai": "^0.24.1"
+    "@google/generative-ai": "^0.24.1",
+    "bson": "^6.10.4"
   }
 }
