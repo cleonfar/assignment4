@@ -438,10 +438,16 @@ export default class HerdGroupingConcept {
     if (!targetHerd) {
       // If target herd does not exist for this user, attempt to create it
       try {
-        const createResult = await this.createHerd({ user, name: targetHerdName });
+        const createResult = await this.createHerd({
+          user,
+          name: targetHerdName,
+        });
         if ("error" in createResult) {
           // If creation fails (e.g., validation in createHerd), try to re-fetch in case of a race
-          const refetched = await this.groups.findOne({ userId: user, name: targetHerdName });
+          const refetched = await this.groups.findOne({
+            userId: user,
+            name: targetHerdName,
+          });
           if (!refetched) {
             return {
               error:
@@ -451,7 +457,10 @@ export default class HerdGroupingConcept {
           targetHerd = refetched;
         } else {
           // Re-fetch the newly created herd to get its full document including _id
-          targetHerd = await this.groups.findOne({ userId: user, name: targetHerdName });
+          targetHerd = await this.groups.findOne({
+            userId: user,
+            name: targetHerdName,
+          });
           if (!targetHerd) { // Should not happen if createHerd succeeded
             return {
               error:
@@ -461,7 +470,10 @@ export default class HerdGroupingConcept {
         }
       } catch (e) {
         // Handle potential race where another process created the herd concurrently
-        const refetched = await this.groups.findOne({ userId: user, name: targetHerdName });
+        const refetched = await this.groups.findOne({
+          userId: user,
+          name: targetHerdName,
+        });
         if (!refetched) {
           console.error("Error creating target herd in splitHerd:", e);
           return {
