@@ -623,7 +623,8 @@
     "packageJson": {
       "dependencies": [
         "npm:@google/genai@^1.25.0",
-        "npm:@google/generative-ai@~0.24.1"
+        "npm:@google/generative-ai@~0.24.1",
+        "npm:bson@^6.10.4"
       ]
     }
   }
