@@ -1,501 +1,481 @@
-import { actions, Frames, Sync } from "@engine";
-// Assuming concepts.ts or similar aggregates these
+import { actions, Sync } from "@engine";
 import { AnimalIdentity, Requesting, UserAuthentification } from "@concepts";
 import { ID } from "@utils/types.ts";
 
-// The user ID for AnimalIdentity is the username from UserAuthentication.
-// We use type branding for clarity, but it's treated as a string value at runtime.
-// Note: We bind engine variables (symbols) for user/ids; no local brand types needed here.
+// --- AnimalIdentity Specific Syncs ---
 
-// --- User Authentication Syncs ---
-// These syncs handle the full flow for user registration, login, and logout.
-// Each request has a corresponding action sync and success/error response syncs.
-
-// 1. Handle User Registration Request
-export const RegisterUserRequest: Sync = ({ request, username, password }) => ({
-  when: actions(
-    [Requesting.request, { path: "/register", username, password }, {
-      request,
-    }],
-  ),
-  then: actions(
-    [UserAuthentification.register, { username, password }, {}], // Output `user` or `error` is handled by subsequent syncs
-  ),
-});
-
-// 1.1 Respond to User Registration Success
-export const RegisterUserResponseSuccess: Sync = (
-  { request, user_auth_id, username_from_request },
+// Sync for handling animal registration request
+export const AnimalRegisterRequest: Sync = (
+  {
+    request,
+    session,
+    authenticatedUser,
+    id,
+    species,
+    sex,
+    birthDate,
+    breed,
+    notes,
+  },
 ) => ({
   when: actions(
-    [Requesting.request, { path: "/register" }, { request }],
-    [UserAuthentification.register, { username: username_from_request }, {
-      user: user_auth_id,
-    }],
-  ),
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: {
-        status: "success",
-        userId: user_auth_id,
-        username: username_from_request,
+    [
+      Requesting.request,
+      {
+        path: "/animals/register",
+        session,
+        id,
+        species,
+        sex,
+        birthDate,
+        breed,
+        notes,
       },
+      { request },
+    ],
+    // Directly verify the session token and bind the username to 'authenticatedUser'.
+    // If verification fails, this 'when' clause won't match, and UnauthorizedRequest will handle it.
+    [UserAuthentification.verify, { token: session }, {
+      user: authenticatedUser,
     }],
+  ),
+  then: actions(
+    // Pass 'authenticatedUser' (which is the username) to AnimalIdentity's 'user' parameter.
+    [
+      AnimalIdentity.registerAnimal,
+      { user: authenticatedUser, id, species, sex, birthDate, breed, notes },
+    ],
   ),
 });
 
-// 1.2 Respond to User Registration Error
-export const RegisterUserResponseError: Sync = (
-  { request, error_message },
+// Sync for responding to successful animal registration
+export const AnimalRegisterResponse: Sync = ({ request, animal }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/register" }, { request }],
+    [AnimalIdentity.registerAnimal, {}, { animal }],
+  ),
+  then: actions(
+    [Requesting.respond, { request, animal }],
+  ),
+});
+
+// Sync for responding to failed animal registration
+export const AnimalRegisterErrorResponse: Sync = ({ request, error }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/register" }, { request }],
+    [AnimalIdentity.registerAnimal, {}, { error }],
+  ),
+  then: actions(
+    [Requesting.respond, { request, error }],
+  ),
+});
+
+// Sync for handling animal status update request
+export const AnimalUpdateStatusRequest: Sync = (
+  { request, session, authenticatedUser, animal, status, notes },
 ) => ({
   when: actions(
-    [Requesting.request, { path: "/register" }, { request }],
-    [UserAuthentification.register, {}, { error: error_message }],
-  ),
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "error", message: error_message },
-    }],
-  ),
-});
-
-// 2. Handle User Login Request
-export const LoginUserRequest: Sync = ({ request, username, password }) => ({
-  when: actions(
-    [Requesting.request, { path: "/login", username, password }, { request }],
-  ),
-  then: actions(
-    [UserAuthentification.login, { username, password }, {}], // Output `token` or `error` is handled by subsequent syncs
-  ),
-});
-
-// 2.1 Respond to User Login Success
-export const LoginUserResponseSuccess: Sync = ({ request, token }) => ({
-  when: actions(
-    [Requesting.request, { path: "/login" }, { request }],
-    [UserAuthentification.login, {}, { token }],
-  ),
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "success", token: token },
-    }],
-  ),
-});
-
-// 2.2 Respond to User Login Error
-export const LoginUserResponseError: Sync = ({ request, error_message }) => ({
-  when: actions(
-    [Requesting.request, { path: "/login" }, { request }],
-    [UserAuthentification.login, {}, { error: error_message }],
-  ),
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "error", message: error_message },
-    }],
-  ),
-});
-
-// 3. Handle User Logout Request
-export const LogoutUserRequest: Sync = ({ request, session_token }) => ({
-  when: actions(
-    [Requesting.request, { path: "/logout", session: session_token }, {
-      request,
+    [
+      Requesting.request,
+      { path: "/animals/updateStatus", session, animal, status, notes },
+      { request },
+    ],
+    [UserAuthentification.verify, { token: session }, {
+      user: authenticatedUser,
     }],
   ),
   then: actions(
-    [UserAuthentification.logout, { token: session_token }, {}], // Output (empty for success, or `error`) handled by subsequent syncs
-  ),
-});
-
-// 3.1 Respond to User Logout Success
-export const LogoutUserResponseSuccess: Sync = ({ request }) => ({
-  when: actions(
-    [Requesting.request, { path: "/logout" }, { request }],
-    [UserAuthentification.logout, {}, {}], // Empty output signifies success
-  ),
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "success", message: "Logged out." },
-    }],
-  ),
-});
-
-// 3.2 Respond to User Logout Error
-export const LogoutUserResponseError: Sync = ({ request, error_message }) => ({
-  when: actions(
-    [Requesting.request, { path: "/logout" }, { request }],
-    [UserAuthentification.logout, {}, { error: error_message }],
-  ),
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "error", message: error_message },
-    }],
-  ),
-});
-
-// --- Animal Identity Syncs (integrating User Authentication) ---
-
-// This pattern will be used for each AnimalIdentity action:
-// 1. A "Process" sync that handles the incoming request, authenticates the user,
-//    and then triggers the AnimalIdentity action if authentication succeeds.
-//    If authentication fails, it binds an `auth_error_message` to the frame.
-// 2. A "Success Response" sync that triggers `Requesting.respond` when the AnimalIdentity action succeeds.
-// 3. An "Authentication Error Response" sync that triggers `Requesting.respond` when authentication fails.
-// 4. A "Concept Error Response" sync that triggers `Requesting.respond` when the AnimalIdentity action returns an error.
-
-// This verbose pattern clearly separates concerns for each outcome.
-
-// 4. Register Animal Flow
-export const RegisterAnimalProcess: Sync = ({
-  request,
-  session,
-  id,
-  species,
-  sex,
-  birthDate,
-  breed,
-  notes, // Inputs from request body
-  username, // Output from UserAuthentication.verify
-  auth_error_message, // Bound if authentication fails
-  animal_id, // Output from AnimalIdentity.registerAnimal
-  animal_concept_error, // Output from AnimalIdentity.registerAnimal if it fails
-}) => ({
-  when: actions(
-    [Requesting.request, {
-      path: "/animals/register",
-      session,
-      id,
-      species,
-      sex,
-      birthDate,
-      breed,
+    [AnimalIdentity.updateStatus, {
+      user: authenticatedUser,
+      animal,
+      status,
       notes,
-    }, { request }],
+    }],
+  ),
+});
+
+// Sync for responding to successful animal status update
+export const AnimalUpdateStatusResponse: Sync = ({ request }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/updateStatus" }, { request }],
+    [AnimalIdentity.updateStatus, {}, {}], // Empty result
+  ),
+  then: actions(
+    [Requesting.respond, {
+      request,
+      message: "Animal status updated successfully.",
+    }],
+  ),
+});
+
+// Sync for responding to failed animal status update
+export const AnimalUpdateStatusErrorResponse: Sync = ({ request, error }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/updateStatus" }, { request }],
+    [AnimalIdentity.updateStatus, {}, { error }],
+  ),
+  then: actions(
+    [Requesting.respond, { request, error }],
+  ),
+});
+
+// Sync for handling animal details edit request
+export const AnimalEditDetailsRequest: Sync = (
+  {
+    request,
+    session,
+    authenticatedUser,
+    animal,
+    species,
+    breed,
+    birthDate,
+    sex,
+  },
+) => ({
+  when: actions(
+    [
+      Requesting.request,
+      {
+        path: "/animals/editDetails",
+        session,
+        animal,
+        species,
+        breed,
+        birthDate,
+        sex,
+      },
+      { request },
+    ],
+    [UserAuthentification.verify, { token: session }, {
+      user: authenticatedUser,
+    }],
+  ),
+  then: actions(
+    [AnimalIdentity.editDetails, {
+      user: authenticatedUser,
+      animal,
+      species,
+      breed,
+      birthDate,
+      sex,
+    }],
+  ),
+});
+
+// Sync for responding to successful animal details edit
+export const AnimalEditDetailsResponse: Sync = ({ request }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/editDetails" }, { request }],
+    [AnimalIdentity.editDetails, {}, {}], // Empty result
+  ),
+  then: actions(
+    [Requesting.respond, {
+      request,
+      message: "Animal details updated successfully.",
+    }],
+  ),
+});
+
+// Sync for responding to failed animal details edit
+export const AnimalEditDetailsErrorResponse: Sync = ({ request, error }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/editDetails" }, { request }],
+    [AnimalIdentity.editDetails, {}, { error }],
+  ),
+  then: actions(
+    [Requesting.respond, { request, error }],
+  ),
+});
+
+// Sync for handling animal mark as transferred request
+export const AnimalMarkAsTransferredRequest: Sync = (
+  { request, session, authenticatedUser, animal, date, recipientNotes },
+) => ({
+  when: actions(
+    [
+      Requesting.request,
+      {
+        path: "/animals/markTransferred",
+        session,
+        animal,
+        date,
+        recipientNotes,
+      },
+      { request },
+    ],
+    [UserAuthentification.verify, { token: session }, {
+      user: authenticatedUser,
+    }],
+  ),
+  then: actions(
+    [
+      AnimalIdentity.markAsTransferred,
+      { user: authenticatedUser, animal, date, recipientNotes },
+    ],
+  ),
+});
+
+// Sync for responding to successful animal mark as transferred
+export const AnimalMarkAsTransferredResponse: Sync = ({ request }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/markTransferred" }, { request }],
+    [AnimalIdentity.markAsTransferred, {}, {}], // Empty result
+  ),
+  then: actions(
+    [Requesting.respond, {
+      request,
+      message: "Animal marked as transferred successfully.",
+    }],
+  ),
+});
+
+// Sync for responding to failed animal mark as transferred
+export const AnimalMarkAsTransferredErrorResponse: Sync = (
+  { request, error },
+) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/markTransferred" }, { request }],
+    [AnimalIdentity.markAsTransferred, {}, { error }],
+  ),
+  then: actions(
+    [Requesting.respond, { request, error }],
+  ),
+});
+
+// Sync for handling animal mark as deceased request
+export const AnimalMarkAsDeceasedRequest: Sync = (
+  { request, session, authenticatedUser, animal, date, cause },
+) => ({
+  when: actions(
+    [
+      Requesting.request,
+      { path: "/animals/markDeceased", session, animal, date, cause },
+      { request },
+    ],
+    [UserAuthentification.verify, { token: session }, {
+      user: authenticatedUser,
+    }],
+  ),
+  then: actions(
+    [AnimalIdentity.markAsDeceased, {
+      user: authenticatedUser,
+      animal,
+      date,
+      cause,
+    }],
+  ),
+});
+
+// Sync for responding to successful animal mark as deceased
+export const AnimalMarkAsDeceasedResponse: Sync = ({ request }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/markDeceased" }, { request }],
+    [AnimalIdentity.markAsDeceased, {}, {}], // Empty result
+  ),
+  then: actions(
+    [Requesting.respond, {
+      request,
+      message: "Animal marked as deceased successfully.",
+    }],
+  ),
+});
+
+// Sync for responding to failed animal mark as deceased
+export const AnimalMarkAsDeceasedErrorResponse: Sync = (
+  { request, error },
+) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/markDeceased" }, { request }],
+    [AnimalIdentity.markAsDeceased, {}, { error }],
+  ),
+  then: actions(
+    [Requesting.respond, { request, error }],
+  ),
+});
+
+// Sync for handling animal mark as sold request
+export const AnimalMarkAsSoldRequest: Sync = (
+  { request, session, authenticatedUser, animal, date, buyerNotes },
+) => ({
+  when: actions(
+    [
+      Requesting.request,
+      { path: "/animals/markSold", session, animal, date, buyerNotes },
+      { request },
+    ],
+    [UserAuthentification.verify, { token: session }, {
+      user: authenticatedUser,
+    }],
+  ),
+  then: actions(
+    [AnimalIdentity.markAsSold, {
+      user: authenticatedUser,
+      animal,
+      date,
+      buyerNotes,
+    }],
+  ),
+});
+
+// Sync for responding to successful animal mark as sold
+export const AnimalMarkAsSoldResponse: Sync = ({ request }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/markSold" }, { request }],
+    [AnimalIdentity.markAsSold, {}, {}], // Empty result
+  ),
+  then: actions(
+    [Requesting.respond, {
+      request,
+      message: "Animal marked as sold successfully.",
+    }],
+  ),
+});
+
+// Sync for responding to failed animal mark as sold
+export const AnimalMarkAsSoldErrorResponse: Sync = ({ request, error }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/markSold" }, { request }],
+    [AnimalIdentity.markAsSold, {}, { error }],
+  ),
+  then: actions(
+    [Requesting.respond, { request, error }],
+  ),
+});
+
+// Sync for handling animal removal request
+export const AnimalRemoveRequest: Sync = (
+  { request, session, authenticatedUser, animal },
+) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/remove", session, animal }, {
+      request,
+    }],
+    [UserAuthentification.verify, { token: session }, {
+      user: authenticatedUser,
+    }],
+  ),
+  then: actions(
+    [AnimalIdentity.removeAnimal, { user: authenticatedUser, animal }],
+  ),
+});
+
+// Sync for responding to successful animal removal
+export const AnimalRemoveResponse: Sync = ({ request }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/remove" }, { request }],
+    [AnimalIdentity.removeAnimal, {}, {}], // Empty result
+  ),
+  then: actions(
+    [Requesting.respond, { request, message: "Animal removed successfully." }],
+  ),
+});
+
+// Sync for responding to failed animal removal
+export const AnimalRemoveErrorResponse: Sync = ({ request, error }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/remove" }, { request }],
+    [AnimalIdentity.removeAnimal, {}, { error }],
+  ),
+  then: actions(
+    [Requesting.respond, { request, error }],
+  ),
+});
+
+// Sync for handling query for a single animal by ID
+export const GetAnimalRequest: Sync = (
+  { request, session, authenticatedUser, id, animalDoc, error },
+) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/get", session, id }, { request }],
+    [UserAuthentification.verify, { token: session }, {
+      user: authenticatedUser,
+    }],
   ),
   where: async (frames) => {
-    const originalFrame = frames[0]; // Capture original request details for error responses
-    const authenticatedFrames = await frames.query(
-      async ({ token }: { token: string }) => {
-        const result = await UserAuthentification.verify({ token });
-        return "user" in result ? [result] : [];
+    // Query for the animal, passing authenticatedUser (username) as the owner
+    // AnimalIdentity._getAnimal returns { animal: AnimalDocument } or { error: string }
+    const queried = await frames.query(
+      async ({ user, id }: { user: string; id: string }) => {
+        const res = await AnimalIdentity._getAnimal({
+          user: user as ID,
+          id: id as ID,
+        });
+        return [res];
       },
-      { token: session },
-      { user: username },
+      { user: authenticatedUser, id },
+      { animal: animalDoc, error },
     );
-
-    if (
-      authenticatedFrames.length === 0 ||
-      authenticatedFrames[0][username] === undefined
-    ) {
-      // Authentication failed. Return a frame with the error message.
-      return new Frames({
-        ...originalFrame,
-        [auth_error_message]:
-          "Authentication failed: Invalid or expired session.",
-      });
-    }
-    // Authentication succeeded. The `username` is now bound in `authenticatedFrames`.
-    return authenticatedFrames;
+    return queried;
   },
-  then: actions(
-    // This `then` clause only fires if `username` is successfully bound (auth success).
-    // It calls `AnimalIdentity.registerAnimal` and captures its `animal` ID or `error`.
-    [AnimalIdentity.registerAnimal, {
-      user: username, // bound from authentication
-      id,
-      species,
-      sex,
-      birthDate,
-      breed,
-      notes,
-    }, { animal: animal_id, error: animal_concept_error }],
-  ),
+  then: actions(),
 });
 
-// 4.1 Respond to Register Animal (Success)
-export const RespondRegisterAnimalSuccess: Sync = ({ request, animal_id }) => ({
+// Sync for responding to errors when getting a single animal
+export const GetAnimalErrorResponse: Sync = ({ request, error }) => ({
   when: actions(
-    [Requesting.request, { path: "/animals/register" }, { request }],
-    // Match the successful output from the `then` clause of RegisterAnimalProcess
-    [AnimalIdentity.registerAnimal, {}, { animal: animal_id }],
+    [Requesting.request, { path: "/animals/get" }, { request }],
   ),
+  where: (frames) => frames.filter(($) => $[error] !== undefined),
   then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "success", animalId: animal_id },
-    }],
+    [Requesting.respond, { request, error }],
   ),
 });
 
-// 4.2 Respond to Register Animal (Authentication Error)
-export const RespondRegisterAnimalAuthError: Sync = (
-  { request, auth_error_message, animal_id, animal_concept_error },
+// Sync for responding to successful get animal
+export const GetAnimalSuccessResponse: Sync = ({ request, animalDoc }) => ({
+  when: actions(
+    [Requesting.request, { path: "/animals/get" }, { request }],
+  ),
+  where: (frames) => frames.filter(($) => $[animalDoc] !== undefined),
+  then: actions(
+    [Requesting.respond, { request, animal: animalDoc }],
+  ),
+});
+
+// Sync for handling query for all animals by user
+export const GetAllAnimalsRequest: Sync = (
+  { request, session, authenticatedUser, results, error },
 ) => ({
   when: actions(
-    [Requesting.request, { path: "/animals/register" }, { request }],
-  ),
-  where: (frames) => {
-    // Filter frames to only include those where `auth_error_message` was set by `RegisterAnimalProcess`
-    // AND where `AnimalIdentity.registerAnimal` did not produce a successful output (`animal_id`)
-    // AND did not produce its own concept error (`animal_concept_error`).
-    return frames.filter(($) =>
-      $[auth_error_message] !== undefined &&
-      $[animal_id] === undefined &&
-      $[animal_concept_error] === undefined
-    );
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "error", message: auth_error_message },
+    [Requesting.request, { path: "/animals/all", session }, { request }],
+    [UserAuthentification.verify, { token: session }, {
+      user: authenticatedUser,
     }],
-  ),
-});
-
-// 4.3 Respond to Register Animal (Concept Error from AnimalIdentity)
-export const RespondRegisterAnimalConceptError: Sync = (
-  { request, animal_concept_error },
-) => ({
-  when: actions(
-    [Requesting.request, { path: "/animals/register" }, { request }],
-    // Match when AnimalIdentity.registerAnimal returned an error
-    [AnimalIdentity.registerAnimal, {}, { error: animal_concept_error }],
-  ),
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "error", message: animal_concept_error },
-    }],
-  ),
-});
-
-// 5. Get All Animals Flow
-export const GetAllAnimalsProcess: Sync = ({
-  request,
-  session,
-  username,
-  auth_error_message,
-  animals_list, // Will be bound in where via query wrapper
-  animal_concept_error, // Will be bound in where via query wrapper
-}) => ({
-  when: actions(
-    [Requesting.request, { path: "/animals", session }, { request }],
   ),
   where: async (frames) => {
-    const originalFrame = frames[0];
-    const authenticatedFrames = await frames.query(
-      async ({ token }: { token: string }) => {
-        const result = await UserAuthentification.verify({ token });
-        return "user" in result ? [result] : [];
-      },
-      { token: session },
-      { user: username },
-    );
-
-    if (
-      authenticatedFrames.length === 0 ||
-      authenticatedFrames[0][username] === undefined
-    ) {
-      // Authentication failed.
-      return new Frames({
-        ...originalFrame,
-        [auth_error_message]:
-          "Authentication failed: Invalid or expired session.",
-      });
-    }
-    // Authentication succeeded. Now query for animals and bind outputs.
-    const queried = await authenticatedFrames.query(
+    // Query for all animals owned by the authenticated user.
+    // AnimalIdentity._getAllAnimals returns { animals: AnimalDocument[] } or { error: string }
+    const queried = await frames.query(
       async ({ user }: { user: string }) => {
         const res = await AnimalIdentity._getAllAnimals({ user: user as ID });
         return [res];
       },
-      { user: username },
-      { animals: animals_list, error: animal_concept_error },
+      { user: authenticatedUser },
+      { animals: results, error },
     );
     return queried;
   },
   then: actions(),
 });
 
-// 5.1 Respond to Get All Animals (Success)
-export const RespondGetAllAnimalsSuccess: Sync = (
-  { request, animals_list },
-) => ({
+// Sync for responding to errors when getting all animals
+export const GetAllAnimalsErrorResponse: Sync = ({ request, error }) => ({
   when: actions(
-    [Requesting.request, { path: "/animals" }, { request }],
+    [Requesting.request, { path: "/animals/all" }, { request }],
   ),
-  where: (frames) => frames.filter(($) => $[animals_list] !== undefined),
+  where: (frames) => frames.filter(($) => $[error] !== undefined),
   then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "success", animals: animals_list },
-    }],
+    [Requesting.respond, { request, error }],
   ),
 });
 
-// 5.2 Respond to Get All Animals (Authentication Error)
-export const RespondGetAllAnimalsAuthError: Sync = (
-  { request, auth_error_message, animals_list, animal_concept_error },
-) => ({
+// Sync for responding to successful get all animals
+export const GetAllAnimalsSuccessResponse: Sync = ({ request, results }) => ({
   when: actions(
-    [Requesting.request, { path: "/animals" }, { request }],
+    [Requesting.request, { path: "/animals/all" }, { request }],
   ),
-  where: (frames) => {
-    // Filter frames to only include those where `auth_error_message` was set by `GetAllAnimalsProcess`
-    // AND where `AnimalIdentity._getAllAnimals` did not produce results (`animals_list`)
-    // AND did not produce its own concept error (`animal_concept_error`).
-    return frames.filter(($) =>
-      $[auth_error_message] !== undefined &&
-      $[animals_list] === undefined &&
-      $[animal_concept_error] === undefined
-    );
-  },
+  where: (frames) => frames.filter(($) => $[results] !== undefined),
   then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "error", message: auth_error_message },
-    }],
-  ),
-});
-
-// 5.3 Respond to Get All Animals (Concept Error from AnimalIdentity Query)
-export const RespondGetAllAnimalsConceptError: Sync = (
-  { request, animal_concept_error },
-) => ({
-  when: actions(
-    [Requesting.request, { path: "/animals" }, { request }],
-  ),
-  where: (frames) =>
-    frames.filter(($) => $[animal_concept_error] !== undefined),
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "error", message: animal_concept_error },
-    }],
-  ),
-});
-
-// 6. Get Specific Animal Flow (path: /animals/:id)
-export const GetSpecificAnimalProcess: Sync = ({
-  request,
-  session,
-  animal_id_param, // Captured from path, e.g., `/animals/animal123` -> `animal123`
-  id,
-  username,
-  auth_error_message,
-  animal_document, // Will be bound in where via query wrapper
-  animal_concept_error, // Will be bound in where via query wrapper
-}) => ({
-  when: actions(
-    [Requesting.request, { path: { "$regex": "^/animals/[^/]+$" }, session }, {
-      request,
-      path: animal_id_param,
-    }], // Match /animals/ID
-  ),
-  where: async (frames) => {
-    const originalFrame = frames[0];
-    // Extract animal ID from the path variable (e.g., /animals/my-animal-id)
-    const pathStr = originalFrame[animal_id_param] as string;
-    const extractedId = (pathStr.split("/").pop() || "") as ID;
-    frames = frames.map((f) => ({ ...f, id: extractedId })); // Add 'id' to the frame
-
-    const authenticatedFrames = await frames.query(
-      async ({ token }: { token: string }) => {
-        const result = await UserAuthentification.verify({ token });
-        return "user" in result ? [result] : [];
-      },
-      { token: session },
-      { user: username },
-    );
-
-    if (
-      authenticatedFrames.length === 0 ||
-      authenticatedFrames[0][username] === undefined
-    ) {
-      // Authentication failed.
-      return new Frames({
-        ...originalFrame,
-        [auth_error_message]:
-          "Authentication failed: Invalid or expired session.",
-      });
-    }
-    // Authentication succeeded. Also query and bind outputs for this endpoint
-    const queried = await authenticatedFrames.query(
-      async ({ user, id }: { user: string; id: ID }) => {
-        const res = await AnimalIdentity._getAnimal({ user: user as ID, id });
-        return [res];
-      },
-      { user: username, id },
-      { animal: animal_document, error: animal_concept_error },
-    );
-    return queried;
-  },
-  then: actions(),
-});
-
-// 6.1 Respond to Get Specific Animal (Success)
-export const RespondGetSpecificAnimalSuccess: Sync = (
-  { request, animal_document },
-) => ({
-  when: actions(
-    [Requesting.request, { path: { "$regex": "^/animals/[^/]+$" } }, {
-      request,
-    }],
-  ),
-  where: (frames) => frames.filter(($) => $[animal_document] !== undefined),
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "success", animal: animal_document },
-    }],
-  ),
-});
-
-// 6.2 Respond to Get Specific Animal (Authentication Error)
-export const RespondGetSpecificAnimalAuthError: Sync = (
-  { request, auth_error_message, animal_document, animal_concept_error },
-) => ({
-  when: actions(
-    [Requesting.request, { path: { "$regex": "^/animals/[^/]+$" } }, {
-      request,
-    }],
-  ),
-  where: (frames) => {
-    return frames.filter(($) =>
-      $[auth_error_message] !== undefined &&
-      $[animal_document] === undefined &&
-      $[animal_concept_error] === undefined
-    );
-  },
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "error", message: auth_error_message },
-    }],
-  ),
-});
-
-// 6.3 Respond to Get Specific Animal (Concept Error from AnimalIdentity Query)
-export const RespondGetSpecificAnimalConceptError: Sync = (
-  { request, animal_concept_error },
-) => ({
-  when: actions(
-    [Requesting.request, { path: { "$regex": "^/animals/[^/]+$" } }, {
-      request,
-    }],
-  ),
-  where: (frames) =>
-    frames.filter(($) => $[animal_concept_error] !== undefined),
-  then: actions(
-    [Requesting.respond, {
-      request,
-      body: { status: "error", message: animal_concept_error },
-    }],
+    [Requesting.respond, { request, results }],
   ),
 });

@@ -61,7 +61,7 @@ export default class UserAuthenticationConcept {
    */
   async register(
     { username, password }: { username: string; password: string },
-  ): Promise<{ user: User } | { error: string }> {
+  ): Promise<Empty | { error: string }> {
     // Check precondition: no User with the given username already exists
     const existingUser = await this.users.findOne({ username });
     if (existingUser) {
@@ -78,7 +78,7 @@ export default class UserAuthenticationConcept {
     try {
       await this.users.insertOne(newUser);
       // Returns the ID of the new User entity
-      return { user: newUser._id };
+      return {};
     } catch (e) {
       console.error("Error registering user:", e);
       return { error: "Failed to register user due to a database error." };
