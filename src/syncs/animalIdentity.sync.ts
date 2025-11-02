@@ -281,8 +281,8 @@ export const GetAllAnimalsProcess: Sync = ({
   session,
   username,
   auth_error_message,
-  animals_list, // Output from AnimalIdentity._getAllAnimals
-  animal_concept_error, // Output from AnimalIdentity._getAllAnimals if it fails
+  animals_list, // Will be bound in where via query wrapper
+  animal_concept_error, // Will be bound in where via query wrapper
 }) => ({
   when: actions(
     [Requesting.request, { path: "/animals", session }, { request }],
@@ -309,17 +309,18 @@ export const GetAllAnimalsProcess: Sync = ({
           "Authentication failed: Invalid or expired session.",
       });
     }
-    // Authentication succeeded.
-    return authenticatedFrames;
+    // Authentication succeeded. Now query for animals and bind outputs.
+    const queried = await authenticatedFrames.query(
+      async ({ user }: { user: string }) => {
+        const res = await AnimalIdentity._getAllAnimals({ user: user as ID });
+        return [res];
+      },
+      { user: username },
+      { animals: animals_list, error: animal_concept_error },
+    );
+    return queried;
   },
-  then: actions(
-    // This `then` fires if auth succeeded. It queries for animals.
-    // It captures both the list of animals or an error from the query.
-    [AnimalIdentity._getAllAnimals, { user: username }, {
-      animals: animals_list,
-      error: animal_concept_error,
-    }],
-  ),
+  then: actions(),
 });
 
 // 5.1 Respond to Get All Animals (Success)
@@ -328,8 +329,8 @@ export const RespondGetAllAnimalsSuccess: Sync = (
 ) => ({
   when: actions(
     [Requesting.request, { path: "/animals" }, { request }],
-    [AnimalIdentity._getAllAnimals, {}, { animals: animals_list }],
   ),
+  where: (frames) => frames.filter(($) => $[animals_list] !== undefined),
   then: actions(
     [Requesting.respond, {
       request,
@@ -369,8 +370,9 @@ export const RespondGetAllAnimalsConceptError: Sync = (
 ) => ({
   when: actions(
     [Requesting.request, { path: "/animals" }, { request }],
-    [AnimalIdentity._getAllAnimals, {}, { error: animal_concept_error }],
   ),
+  where: (frames) =>
+    frames.filter(($) => $[animal_concept_error] !== undefined),
   then: actions(
     [Requesting.respond, {
       request,
@@ -387,8 +389,8 @@ export const GetSpecificAnimalProcess: Sync = ({
   id,
   username,
   auth_error_message,
-  animal_document, // Output from AnimalIdentity._getAnimal
-  animal_concept_error, // Output from AnimalIdentity._getAnimal if it fails
+  animal_document, // Will be bound in where via query wrapper
+  animal_concept_error, // Will be bound in where via query wrapper
 }) => ({
   when: actions(
     [Requesting.request, { path: { "$regex": "^/animals/[^/]+$" }, session }, {
@@ -423,16 +425,18 @@ export const GetSpecificAnimalProcess: Sync = ({
           "Authentication failed: Invalid or expired session.",
       });
     }
-    // Authentication succeeded.
-    return authenticatedFrames;
+    // Authentication succeeded. Also query and bind outputs for this endpoint
+    const queried = await authenticatedFrames.query(
+      async ({ user, id }: { user: string; id: ID }) => {
+        const res = await AnimalIdentity._getAnimal({ user: user as ID, id });
+        return [res];
+      },
+      { user: username, id },
+      { animal: animal_document, error: animal_concept_error },
+    );
+    return queried;
   },
-  then: actions(
-    // Query for the specific animal document for the authenticated user.
-    [AnimalIdentity._getAnimal, {
-      user: username,
-      id,
-    }, { animal: animal_document, error: animal_concept_error }],
-  ),
+  then: actions(),
 });
 
 // 6.1 Respond to Get Specific Animal (Success)
@@ -443,8 +447,8 @@ export const RespondGetSpecificAnimalSuccess: Sync = (
     [Requesting.request, { path: { "$regex": "^/animals/[^/]+$" } }, {
       request,
     }],
-    [AnimalIdentity._getAnimal, {}, { animal: animal_document }],
   ),
+  where: (frames) => frames.filter(($) => $[animal_document] !== undefined),
   then: actions(
     [Requesting.respond, {
       request,
@@ -485,8 +489,9 @@ export const RespondGetSpecificAnimalConceptError: Sync = (
     [Requesting.request, { path: { "$regex": "^/animals/[^/]+$" } }, {
       request,
     }],
-    [AnimalIdentity._getAnimal, {}, { error: animal_concept_error }],
   ),
+  where: (frames) =>
+    frames.filter(($) => $[animal_concept_error] !== undefined),
   then: actions(
     [Requesting.respond, {
       request,
