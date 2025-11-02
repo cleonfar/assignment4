@@ -98,7 +98,7 @@ export default class UserAuthenticationConcept {
    */
   async login(
     { username, password }: { username: string; password: string },
-  ): Promise<{ user: string } | { error: string }> {
+  ): Promise<{ token: string } | { error: string }> {
     // Check precondition: user with matching username and password exists
     const user = await this.users.findOne({ username, password });
     if (!user) {
@@ -115,7 +115,7 @@ export default class UserAuthenticationConcept {
     try {
       await this.activeSessions.insertOne(newSession);
       // Returns the user's username (as specified in the concept)
-      return { user: user.username };
+      return { token: newSession._id };
     } catch (e) {
       console.error("Error creating session for login:", e);
       return { error: "Failed to log in due to a database error." };
