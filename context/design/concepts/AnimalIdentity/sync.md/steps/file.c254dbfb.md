@@ -1,5 +1,14 @@
+---
+timestamp: 'Sat Nov 01 2025 21:39:44 GMT-0400 (Eastern Daylight Time)'
+parent: '[[..\20251101_213944.0dbad0ad.md]]'
+content_id: c254dbfb79501bc2e16bfec6770bd520e009ae6a923267fa671cb20a9b1f0bbf
+---
+
+# file: src/concepts/UserAuthentication/UserAuthenticationConcept.ts
+
+```typescript
 import { Collection, Db } from "npm:mongodb";
-import { Empty, ID } from "@utils/types.ts";
+import { ID, Empty } from "@utils/types.ts";
 import { freshID } from "@utils/database.ts";
 
 // Declare collection prefix using the concept name
@@ -98,7 +107,7 @@ export default class UserAuthenticationConcept {
    */
   async login(
     { username, password }: { username: string; password: string },
-  ): Promise<{ user: string } | { error: string }> {
+  ): Promise<{ token: string } | { error: string }> {
     // Check precondition: user with matching username and password exists
     const user = await this.users.findOne({ username, password });
     if (!user) {
@@ -115,7 +124,7 @@ export default class UserAuthenticationConcept {
     try {
       await this.activeSessions.insertOne(newSession);
       // Returns the user's username (as specified in the concept)
-      return { user: user.username };
+      return { token: newSession._id };
     } catch (e) {
       console.error("Error creating session for login:", e);
       return { error: "Failed to log in due to a database error." };
@@ -134,9 +143,7 @@ export default class UserAuthenticationConcept {
     { token }: { token: string },
   ): Promise<{ user: string } | { error: string }> {
     // Check precondition: the session token is in the set of activeSessions
-    const session = await this.activeSessions.findOne({
-      _id: token as SessionToken,
-    });
+    const session = await this.activeSessions.findOne({ _id: token as SessionToken });
     if (!session) {
       return { error: "Invalid or expired session token." };
     }
@@ -159,12 +166,11 @@ export default class UserAuthenticationConcept {
   async logout(
     { token }: { token: string },
   ): Promise<Empty | { error: string }> {
-    const result = await this.activeSessions.deleteOne({
-      _id: token as SessionToken,
-    });
+    const result = await this.activeSessions.deleteOne({ _id: token as SessionToken });
     if (result.deletedCount === 0) {
       return { error: "Session token not found or already logged out." };
     }
     return {};
   }
 }
+```

@@ -1,5 +1,14 @@
+---
+timestamp: 'Sat Nov 01 2025 21:42:28 GMT-0400 (Eastern Daylight Time)'
+parent: '[[..\20251101_214228.f54c2a29.md]]'
+content_id: e69d29708622dc7dff59ad49ac8200016767a3e8c2fb0fd9936e66ed72e42bdc
+---
+
+# file: src/concepts/UserAuthentication/UserAuthenticationConcept.ts (Updated)
+
+```typescript
 import { Collection, Db } from "npm:mongodb";
-import { Empty, ID } from "@utils/types.ts";
+import { ID, Empty } from "@utils/types.ts";
 import { freshID } from "@utils/database.ts";
 
 // Declare collection prefix using the concept name
@@ -45,6 +54,10 @@ export default class UserAuthenticationConcept {
   constructor(private readonly db: Db) {
     this.users = this.db.collection(PREFIX + "users");
     this.activeSessions = this.db.collection(PREFIX + "activeSessions");
+    // Ensure unique index for username
+    this.users.createIndex({ username: 1 }, { unique: true });
+    // Ensure unique index for session token (which is _id)
+    this.activeSessions.createIndex({ _id: 1 }, { unique: true });
   }
 
   /**
@@ -86,7 +99,7 @@ export default class UserAuthenticationConcept {
   }
 
   /**
-   * login (username: String, password: String): (user: String)
+   * login (username: String, password: String): (token: String)
    * login (username: String, password: String): (error: String)
    *
    * **requires**
@@ -94,11 +107,11 @@ export default class UserAuthenticationConcept {
    *
    * **effects**
    *   If authentication is successful, creates a new active session for the user
-   *   returns the user's username
+   *   returns the new session token
    */
   async login(
     { username, password }: { username: string; password: string },
-  ): Promise<{ user: string } | { error: string }> {
+  ): Promise<{ token: SessionToken } | { error: string }> {
     // Check precondition: user with matching username and password exists
     const user = await this.users.findOne({ username, password });
     if (!user) {
@@ -114,8 +127,8 @@ export default class UserAuthenticationConcept {
 
     try {
       await this.activeSessions.insertOne(newSession);
-      // Returns the user's username (as specified in the concept)
-      return { user: user.username };
+      // Returns the session token
+      return { token: newSession._id };
     } catch (e) {
       console.error("Error creating session for login:", e);
       return { error: "Failed to log in due to a database error." };
@@ -123,7 +136,7 @@ export default class UserAuthenticationConcept {
   }
 
   /**
-   * verify (token: String): (user: String)
+   * verify (token: String): (username: String)
    * verify (token: String): (error: String)
    *
    * **requires** the session token is in the set of activeSessions
@@ -131,40 +144,75 @@ export default class UserAuthenticationConcept {
    * **effects** returns the username associated with the session
    */
   async verify(
-    { token }: { token: string },
-  ): Promise<{ user: string } | { error: string }> {
+    { token }: { token: SessionToken },
+  ): Promise<{ username: string } | { error: string }> {
     // Check precondition: the session token is in the set of activeSessions
-    const session = await this.activeSessions.findOne({
-      _id: token as SessionToken,
-    });
+    const session = await this.activeSessions.findOne({ _id: token });
     if (!session) {
       return { error: "Invalid or expired session token." };
     }
 
     // Effects: returns the username associated with the session
-    return { user: session.username };
+    return { username: session.username };
   }
 
   /**
    * logout (token: String): Empty
    * logout (token: String): (error: String)
    *
-   * This action is a logical addition to a UserAuthentication concept,
-   * though not explicitly present in the provided specification.
-   *
    * **requires** the session token is in the set of activeSessions
    *
    * **effects** removes the session token from activeSessions
    */
   async logout(
-    { token }: { token: string },
+    { token }: { token: SessionToken },
   ): Promise<Empty | { error: string }> {
-    const result = await this.activeSessions.deleteOne({
-      _id: token as SessionToken,
-    });
+    const result = await this.activeSessions.deleteOne({ _id: token });
     if (result.deletedCount === 0) {
       return { error: "Session token not found or already logged out." };
     }
     return {};
   }
+
+  /**
+   * _getUserIDByUsername (username: String): (userID: User)
+   * _getUserIDByUsername (username: String): (error: String)
+   * @requires user with `username` exists
+   * @effects returns the `_id` (User) of the user
+   */
+  async _getUserIDByUsername(
+    { username }: { username: string },
+  ): Promise<{ userID: User } | { error: string }> {
+    try {
+      const userDoc = await this.users.findOne({ username });
+      if (!userDoc) {
+        return { error: `User with username '${username}' not found.` };
+      }
+      return { userID: userDoc._id };
+    } catch (e) {
+      console.error("Error fetching user ID by username:", e);
+      return { error: "Failed to fetch user ID due to a database error." };
+    }
+  }
 }
+```
+
+***
+
+## Synchronization Files
+
+For these synchronizations, we assume the existence of a `Requesting` concept as described in the introductory text, which handles incoming HTTP requests and outgoing responses.
+
+**Assumed `Requesting` Concept actions:**
+
+* `request (path: string, method: string, session?: ID, ...params: any): (request: ID, path: string, method: string, ...params: any)`
+  * This will trigger the `when` clauses of our syncs.
+  * `session` will be used for authentication.
+* `respond (request: ID, status: number, body: unknown): Empty`
+  * This will be called in the `then` clauses to send HTTP responses.
+
+***
+
+### Syncs for User Authentication
+
+These synchronizations handle requests related to user registration, login, and logout.

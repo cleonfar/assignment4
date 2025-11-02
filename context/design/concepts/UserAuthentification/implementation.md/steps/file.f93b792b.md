@@ -1,5 +1,14 @@
+---
+timestamp: 'Sat Nov 01 2025 21:11:05 GMT-0400 (Eastern Daylight Time)'
+parent: '[[..\20251101_211105.37e649e9.md]]'
+content_id: f93b792bd34dce8bc39583173d18e1c89691d3e616fe95ca8bc4d359d54a1a3a
+---
+
+# file: src/concepts/UserAuthentication/UserAuthenticationConcept.ts
+
+```typescript
 import { Collection, Db } from "npm:mongodb";
-import { Empty, ID } from "@utils/types.ts";
+import { ID, Empty } from "@utils/types.ts";
 import { freshID } from "@utils/database.ts";
 
 // Declare collection prefix using the concept name
@@ -134,9 +143,7 @@ export default class UserAuthenticationConcept {
     { token }: { token: string },
   ): Promise<{ user: string } | { error: string }> {
     // Check precondition: the session token is in the set of activeSessions
-    const session = await this.activeSessions.findOne({
-      _id: token as SessionToken,
-    });
+    const session = await this.activeSessions.findOne({ _id: token as SessionToken });
     if (!session) {
       return { error: "Invalid or expired session token." };
     }
@@ -159,12 +166,11 @@ export default class UserAuthenticationConcept {
   async logout(
     { token }: { token: string },
   ): Promise<Empty | { error: string }> {
-    const result = await this.activeSessions.deleteOne({
-      _id: token as SessionToken,
-    });
+    const result = await this.activeSessions.deleteOne({ _id: token as SessionToken });
     if (result.deletedCount === 0) {
       return { error: "Session token not found or already logged out." };
     }
     return {};
   }
 }
+```

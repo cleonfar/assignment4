@@ -1,13 +1,14 @@
-[@concept-design-brief](../../background/concept-design-brief.md)
+---
+timestamp: 'Sat Nov 01 2025 21:14:09 GMT-0400 (Eastern Daylight Time)'
+parent: '[[..\20251101_211409.a911a87a.md]]'
+content_id: f0efba94699bab7512ccec0749eafdaafe9727de17aadffb719ea210cfa81dfc
+---
 
-[@concept-specifications](../../background/concept-specifications.md)
-
-# Prompt: Please write a generic userAuthenticifation concept spec that allows a user to log into a web account.
 # response:
 
 Here is a concept specification for a generic `UserAuthentication` concept, following the provided structure and guidelines:
 
----
+***
 
 **concept** UserAuthentication \[User]
 
@@ -20,9 +21,9 @@ Here is a concept specification for a generic `UserAuthentication` concept, foll
     a username String
     a password String
 
-  a set of activeSessions with
-    a session token String
-    a username String
+a set of activeSessions with
+a session token String
+a username String
 
 **actions**
 
@@ -35,10 +36,10 @@ Here is a concept specification for a generic `UserAuthentication` concept, foll
       returns the new User entity
 
  login (username: String, password: String): (user: String)
-    **requires** 
+    **requires**
       there exists a User 'u' such that u's username is 'username' AND u's password is 'password'
     **effects** Returns the user's username.
 
-  verify (token: String): (user: String)
-    **requires** the session token is in the set of activeSessions
-    **effects** returns the username associated with the session
+verify (token: String): (user: String)
+**requires** the session token is in the set of activeSessions
+**effects** returns the username associated with the session
