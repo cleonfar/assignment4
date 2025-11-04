@@ -119,6 +119,123 @@ export default class ReproductionTrackingConcept {
     return value instanceof Date ? value : new Date(value);
   }
 
+  // --- Cycle detection utilities (user-scoped DAG of parentage) ---
+  // We model a graph where nodes are animal external IDs (mothers and offspring share the same ID namespace),
+  // and edges go from a parent (motherId/fatherId) to each offspring.externalId produced in a litter.
+  // UNKNOWN_FATHER_ID is skipped.
+
+  // Build a parent->children adjacency map for a user
+  private async _buildParentToChildrenMap(
+    user: UserId,
+  ): Promise<Map<ID, Set<ID>>> {
+    const map = new Map<ID, Set<ID>>();
+
+    // Fetch all litters for this user (parents live here)
+    const litters = await this.litters.find({ ownerId: user }).project({
+      _id: 1,
+      motherId: 1,
+      fatherId: 1,
+    }).toArray();
+    if (litters.length === 0) return map;
+
+    // Fetch all offspring for this user and group by litterId
+    const offspring = await this.offspring.find({ ownerId: user }).project({
+      litterId: 1,
+      externalId: 1,
+    }).toArray();
+    const byLitter = new Map<ID, ID[]>();
+    for (const o of offspring) {
+      const lid = o.litterId as ID;
+      const arr = byLitter.get(lid) ?? [];
+      arr.push(o.externalId as ID);
+      byLitter.set(lid, arr);
+    }
+
+    // Build edges: motherId -> child, fatherId (if not UNKNOWN) -> child
+    for (const l of litters) {
+      const children = byLitter.get(l._id as ID) ?? [];
+      const parents: ID[] = [l.motherId as ID];
+      if (l.fatherId && l.fatherId !== UNKNOWN_FATHER_ID) {
+        parents.push(l.fatherId as ID);
+      }
+      for (const p of parents) {
+        if (!map.has(p)) map.set(p, new Set<ID>());
+        const set = map.get(p)!;
+        for (const c of children) set.add(c);
+      }
+    }
+
+    return map;
+  }
+
+  // Determine if `start` is an ancestor of `target` using the computed map
+  private _isAncestor(map: Map<ID, Set<ID>>, start: ID, target: ID): boolean {
+    if (start === target) return true; // Treat identity as ancestor for immediate self-loop detection
+    const seen = new Set<ID>();
+    const queue: ID[] = [];
+    queue.push(start);
+    seen.add(start);
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      const children = map.get(cur);
+      if (!children) continue;
+      for (const ch of children) {
+        if (ch === target) return true;
+        if (!seen.has(ch)) {
+          seen.add(ch);
+          queue.push(ch);
+        }
+      }
+    }
+    return false;
+  }
+
+  // Check whether adding edges parent->child for the given parents would create a cycle
+  private async _wouldCreateCycleOnAddChild(
+    user: UserId,
+    child: ID,
+    parents: ID[],
+  ): Promise<boolean> {
+    // Immediate self-loop
+    if (parents.some((p) => p === child)) return true;
+    const map = await this._buildParentToChildrenMap(user);
+    // If child is already an ancestor of any parent, adding parent->child closes a cycle
+    for (const p of parents) {
+      if (p === UNKNOWN_FATHER_ID) continue;
+      if (this._isAncestor(map, child, p)) return true;
+    }
+    return false;
+  }
+
+  // Check cycle when re-linking an existing child to new parents (updateOffspring: change litter and/or rename externalId)
+  private async _wouldCreateCycleOnRelinkChild(
+    user: UserId,
+    childOldId: ID,
+    oldParentIds: ID[] | undefined,
+    childNewId: ID,
+    newParentIds: ID[],
+  ): Promise<boolean> {
+    // If any new parent equals new child -> self-loop
+    if (newParentIds.some((p) => p === childNewId)) return true;
+    const map = await this._buildParentToChildrenMap(user);
+
+    // Remove edges from old parents to old child in the hypothetical new graph
+    if (oldParentIds && oldParentIds.length > 0) {
+      for (const op of oldParentIds) {
+        if (op === UNKNOWN_FATHER_ID) continue;
+        const set = map.get(op);
+        if (set) set.delete(childOldId);
+      }
+    }
+
+    // Now check if new child is already ancestor of any new parent in this adjusted graph
+    for (const np of newParentIds) {
+      if (np === UNKNOWN_FATHER_ID) continue;
+      if (this._isAncestor(map, childNewId, np)) return true;
+    }
+    return false;
+  }
+
   /**
    * **action** `addMother (user: String, motherId: String): (motherId: String)`
    *
@@ -482,6 +599,30 @@ export default class ReproductionTrackingConcept {
       };
     }
 
+    // Cycle detection: adding edges parent->offspringId must not create a cycle
+    const prospectiveParents: ID[] = [existingLitter.motherId as ID];
+    if (
+      existingLitter.fatherId && existingLitter.fatherId !== UNKNOWN_FATHER_ID
+    ) {
+      prospectiveParents.push(existingLitter.fatherId as ID);
+    }
+    const cycle = await this._wouldCreateCycleOnAddChild(
+      user as UserId,
+      offspringId as ID,
+      prospectiveParents,
+    );
+    if (cycle) {
+      return {
+        error:
+          `Invalid parentage: adding offspring '${offspringId}' under mother '${existingLitter.motherId}'` +
+          (existingLitter.fatherId &&
+              existingLitter.fatherId !== UNKNOWN_FATHER_ID
+            ? ` and father '${existingLitter.fatherId}'`
+            : "") +
+          ` would create an ancestry cycle for user '${user}'.`,
+      };
+    }
+
     const newOffspring: Offspring = {
       _id: freshID(),
       ownerId: user as UserId, // Assign ownerId to the offspring
@@ -580,7 +721,68 @@ export default class ReproductionTrackingConcept {
       updateFields.externalId = finalNewOffspringId; // extend update with externalId
     }
 
-    if (Object.keys(updateFields).length === 0) {
+    // Cycle detection on relink/rename
+    // Determine current litter and parents (old)
+    const currentLitter = await this.litters.findOne({
+      _id: existingOffspring.litterId as ID,
+      ownerId: user as UserId,
+    });
+    const oldParents: ID[] | undefined = currentLitter
+      ? [currentLitter.motherId as ID].concat(
+        (currentLitter.fatherId && currentLitter.fatherId !== UNKNOWN_FATHER_ID)
+          ? [currentLitter.fatherId as ID]
+          : [],
+      )
+      : undefined;
+
+    // Determine target litter and parents (new)
+    const targetLitterId =
+      (updateFields.litterId ?? existingOffspring.litterId) as ID;
+    const targetLitter = await this.litters.findOne({
+      _id: targetLitterId,
+      ownerId: user as UserId,
+    });
+    if (!targetLitter) {
+      return {
+        error: `Target litter with ID '${
+          String(targetLitterId)
+        }' not found for user '${user}'.`,
+      };
+    }
+    const newParents: ID[] = [targetLitter.motherId as ID];
+    if (targetLitter.fatherId && targetLitter.fatherId !== UNKNOWN_FATHER_ID) {
+      newParents.push(targetLitter.fatherId as ID);
+    }
+
+    // Quick self-loop guard on rename vs parents
+    if (newParents.includes(finalNewOffspringId as ID)) {
+      return {
+        error: `Invalid parentage: offspring ID '${
+          String(finalNewOffspringId)
+        }' matches a parent ID in litter '${String(targetLitterId)}'.`,
+      };
+    }
+
+    const relinkCycle = await this._wouldCreateCycleOnRelinkChild(
+      user as UserId,
+      existingOffspring.externalId as ID,
+      oldParents,
+      finalNewOffspringId as ID,
+      newParents,
+    );
+    if (relinkCycle) {
+      return {
+        error:
+          `Invalid parentage: updating offspring '${oldOffspringId}' would create an ancestry cycle (new ID '${
+            String(finalNewOffspringId)
+          }').`,
+      };
+    }
+
+    if (
+      Object.keys(updateFields).length === 0 &&
+      finalNewOffspringId === existingOffspring.externalId
+    ) {
       return { offspringID: finalNewOffspringId };
     }
 

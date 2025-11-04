@@ -1,4 +1,4 @@
-import { Collection, Db, ObjectId } from "npm:mongodb";
+import { Collection, Db } from "npm:mongodb";
 import { Empty, ID } from "../../utils/types.ts"; // Assuming utils is one level up
 import { freshID } from "../../utils/database.ts"; // Assuming utils is one level up
 
@@ -99,6 +99,13 @@ export default class GrowthTrackingConcept {
     return value instanceof Date ? value : new Date(value);
   }
 
+  // Normalize a Date to 00:00:00.000 UTC of that calendar day
+  private _toUtcDay(date: Date): Date {
+    return new Date(
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+    );
+  }
+
   /**
    * @action recordWeight
    * @requires user, animal, date, and weight are provided
@@ -121,12 +128,36 @@ export default class GrowthTrackingConcept {
     if (isNaN(parsedDate.getTime())) {
       return { error: "Invalid date provided." };
     }
+    const dayOnly = this._toUtcDay(parsedDate);
 
     const newWeightRecord: WeightRecord = {
-      date: parsedDate,
+      date: dayOnly,
       weight: weight,
       notes: notes || "", // Ensure notes is an empty string if not provided
     };
+
+    // Enforce one record per calendar day (UTC) for this animal
+    const existing = await this.animals.findOne({
+      ownerId: user,
+      animalId: animal,
+    });
+    if (existing) {
+      const hasSameDay = (existing.weightRecords ?? []).some((r) => {
+        const d = r?.date instanceof Date
+          ? r.date
+          : new Date(r?.date as unknown as string);
+        if (isNaN(d.getTime())) return false;
+        const rd = this._toUtcDay(d);
+        return rd.getTime() === dayOnly.getTime();
+      });
+      if (hasSameDay) {
+        return {
+          error: `A weight record for ${
+            dayOnly.toISOString().slice(0, 10)
+          } already exists for animal ${animal}.`,
+        };
+      }
+    }
 
     // Upsert animal document by owner+animalId; generate system _id on insert
     const result = await this.animals.updateOne(
@@ -164,6 +195,8 @@ export default class GrowthTrackingConcept {
     if (isNaN(parsedDate.getTime())) {
       return { error: "Invalid date provided." };
     }
+    const dayStart = this._toUtcDay(parsedDate);
+    const nextDay = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
     const animalDoc = await this.animals.findOne({
       ownerId: user,
@@ -177,7 +210,7 @@ export default class GrowthTrackingConcept {
 
     const result = await this.animals.updateOne(
       { ownerId: user, animalId: animal },
-      { $pull: { weightRecords: { date: parsedDate } } },
+      { $pull: { weightRecords: { date: { $gte: dayStart, $lt: nextDay } } } },
     );
 
     if (result.modifiedCount === 0) {
@@ -190,8 +223,9 @@ export default class GrowthTrackingConcept {
         updatedAnimalDoc.weightRecords.length === initialWeightRecordsCount
       ) {
         return {
-          error:
-            `No weight record found for animal ${animal} on date ${parsedDate.toISOString()} for user ${user}.`,
+          error: `No weight record found for animal ${animal} on date ${
+            dayStart.toISOString().slice(0, 10)
+          } for user ${user}.`,
         };
       }
     }

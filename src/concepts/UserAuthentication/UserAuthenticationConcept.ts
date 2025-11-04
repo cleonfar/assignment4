@@ -133,23 +133,6 @@ export default class UserAuthenticationConcept {
   async verify(
     { token }: { token: string },
   ): Promise<{ user: string } | { error: string }> {
-    const preview = (v: unknown) => {
-      try {
-        const s = typeof v === "string" ? v : JSON.stringify(v);
-        return s.length > 120 ? `${s.slice(0, 120)}…(${s.length})` : s;
-      } catch {
-        return String(v);
-      }
-    };
-
-    console.log(
-      `[AUTH-CONCEPT] verify(): received token type=${typeof token} value=${
-        preview(
-          token,
-        )
-      }`,
-    );
-
     // Guard: ensure token is a string; prevents Mongo from receiving an object as _id
     if (typeof token !== "string") {
       console.error(
@@ -160,31 +143,14 @@ export default class UserAuthenticationConcept {
     }
 
     try {
-      console.log(
-        `[AUTH-CONCEPT] verify(): querying activeSessions with _id=${
-          preview(
-            token,
-          )
-        }`,
-      );
       const session = await this.activeSessions.findOne({
         _id: token as SessionToken,
       });
-      console.log(
-        `[AUTH-CONCEPT] verify(): query result present=${!!session} details=${
-          preview(
-            session,
-          )
-        }`,
-      );
       if (!session) {
         return { error: "Invalid or expired session token." };
       }
 
       // Effects: returns the username associated with the session
-      console.log(
-        `[AUTH-CONCEPT] verify(): token valid; username=${session.username}`,
-      );
       return { user: session.username };
     } catch (e) {
       console.error("[AUTH-CONCEPT] verify(): database error:", e);
