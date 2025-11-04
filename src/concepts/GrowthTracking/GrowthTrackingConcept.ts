@@ -1,4 +1,4 @@
-import { Collection, Db } from "npm:mongodb";
+import { Collection, Db, ObjectId } from "npm:mongodb";
 import { Empty, ID } from "../../utils/types.ts"; // Assuming utils is one level up
 import { freshID } from "../../utils/database.ts"; // Assuming utils is one level up
 
@@ -101,8 +101,9 @@ export default class GrowthTrackingConcept {
 
   /**
    * @action recordWeight
-   * @requires animal exists (or will be created if first record)
-   * @effects create a new weight record for this animal
+   * @requires user, animal, date, and weight are provided
+   * @effects Creates a new weight record for this animal, or updates an existing animal with the new record.
+   *          If the animal does not exist for the user, a new animal document is created.
    */
   async recordWeight(
     { user, animal, date, weight, notes }: {
@@ -146,8 +147,8 @@ export default class GrowthTrackingConcept {
 
   /**
    * @action removeWeightRecord
-   * @requires there is a weight record for this animal on the given date, owned by the user
-   * @effects remove the given weight record from the animal's set of weight records
+   * @requires an animal with the given `animal` ID exists for `user`, and a weight record for that animal exists on `date`
+   * @effects Removes the specified weight record from the animal's set of weight records.
    */
   async removeWeightRecord(
     { user, animal, date }: {
@@ -197,6 +198,72 @@ export default class GrowthTrackingConcept {
 
     if (!result.acknowledged) {
       return { error: "Failed to remove weight record." };
+    }
+
+    return {};
+  }
+
+  /**
+   * @action deleteAnimal
+   * @requires an animal with the given `animal` ID exists and is owned by `user`
+   * @effects Removes the animal document and all its associated weight records for the given user.
+   *          Also, for all reports owned by `user`, if the deleted animal was included:
+   *          removes the animal from the report's `targetAnimals` list and its corresponding entry from `results`.
+   *          If, after this update, a report's `targetAnimals` or `results` array becomes empty, that report is also deleted.
+   */
+  async deleteAnimal(
+    { user, animal }: { user: UserId; animal: Animal },
+  ): Promise<Empty | { error: string }> {
+    if (!user || !animal) {
+      return { error: "User ID and Animal ID are required." };
+    }
+
+    // 1. Verify the animal exists for the user
+    const animalDoc = await this.animals.findOne({
+      ownerId: user,
+      animalId: animal,
+    });
+    if (!animalDoc) {
+      return {
+        error: `Animal with ID '${animal}' not found for user ${user}.`,
+      };
+    }
+
+    // 2. Delete the animal document
+    const deleteAnimalResult = await this.animals.deleteOne({
+      _id: animalDoc._id,
+    });
+    if (deleteAnimalResult.deletedCount === 0) {
+      return { error: "Failed to delete animal." };
+    }
+
+    // 3. Update all reports that referenced this animal for this user
+    // Remove the animal from targetAnimals and its result from results array
+    await this.reports.updateMany(
+      { ownerId: user, targetAnimals: animal }, // Find reports by owner that include this animal
+      {
+        $pull: {
+          targetAnimals: animal, // Remove from the list of target animals
+          results: { animalId: animal }, // Remove the specific AnimalReportResult
+        },
+      },
+    );
+
+    // 4. Delete any reports that became empty after removing the animal
+    const deleteEmptyReportsResult = await this.reports.deleteMany({
+      ownerId: user,
+      $or: [
+        { targetAnimals: { $size: 0 } }, // If targetAnimals array is empty
+        { results: { $size: 0 } }, // If results array is empty
+      ],
+    });
+
+    if (
+      !deleteAnimalResult.acknowledged || !deleteEmptyReportsResult.acknowledged
+    ) {
+      return {
+        error: "Failed to complete animal deletion and report cleanup.",
+      };
     }
 
     return {};
@@ -354,8 +421,8 @@ export default class GrowthTrackingConcept {
 
   /**
    * @action renameReport
-   * @requires oldName of report exists for the given user
-   * @effects renames the specified report for the given user
+   * @requires an existing report with `oldName` owned by `user`
+   * @effects Renames the specified report for the given user, provided `newName` does not already exist for that user.
    */
   async renameReport(
     { user, oldName, newName }: {
@@ -408,8 +475,8 @@ export default class GrowthTrackingConcept {
 
   /**
    * @action deleteReport
-   * @requires report exists for the given user
-   * @effects remove the report from the system for the given user
+   * @requires an existing report with `reportName` owned by `user`
+   * @effects Removes the report from the system for the given user.
    */
   async deleteReport(
     { user, reportName }: { user: UserId; reportName: string },
@@ -566,7 +633,7 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
 
   /**
    * @action aiSummary
-   * @requires report exists for the given user
+   * @requires an existing report with `reportName` owned by `user`
    * @effects Forces the AI to generate a new summary of the report,
    *          overwriting any existing summary, and saves it for future viewing.
    *          This action always generates a new summary.

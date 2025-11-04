@@ -1,26 +1,30 @@
-import { actions, Frames, Sync } from "@engine";
-import { Requesting, UserAuthentification } from "@concepts";
-// No longer need ID from @utils/types.ts for this file based on current syncs
+import { actions, Sync } from "@engine";
+// Corrected import: UserAuthentication
+import { Requesting, UserAuthentication } from "@concepts";
 
-// --- Common Authentication Flow ---
+// --- Common Authentication Flow --- // Corrected spelling
 
 // Sync for handling user registration request
 export const UserRegisterRequest: Sync = ({ request, username, password }) => ({
   when: actions(
-    [Requesting.request, { path: "/auth/register", username, password }, {
-      request,
-    }],
+    [Requesting.request, {
+      path: "/UserAuthentication/register", // Corrected path
+      username,
+      password,
+    }, { request }],
   ),
   then: actions(
-    [UserAuthentification.register, { username, password }],
+    [UserAuthentication.register, { username, password }], // Corrected concept name
   ),
 });
 
 // Sync for responding to successful user registration
 export const UserRegisterResponse: Sync = ({ request, user }) => ({
   when: actions(
-    [Requesting.request, { path: "/auth/register" }, { request }],
-    [UserAuthentification.register, {}, { user }],
+    [Requesting.request, { path: "/UserAuthentication/register" }, { // Corrected path
+      request,
+    }],
+    [UserAuthentication.register, {}, { user }], // Corrected concept name
   ),
   then: actions(
     [Requesting.respond, { request, user }],
@@ -30,8 +34,10 @@ export const UserRegisterResponse: Sync = ({ request, user }) => ({
 // Sync for responding to failed user registration
 export const UserRegisterErrorResponse: Sync = ({ request, error }) => ({
   when: actions(
-    [Requesting.request, { path: "/auth/register" }, { request }],
-    [UserAuthentification.register, {}, { error }],
+    [Requesting.request, { path: "/UserAuthentication/register" }, { // Corrected path
+      request,
+    }],
+    [UserAuthentication.register, {}, { error }], // Corrected concept name
   ),
   then: actions(
     [Requesting.respond, { request, error }],
@@ -41,20 +47,22 @@ export const UserRegisterErrorResponse: Sync = ({ request, error }) => ({
 // Sync for handling user login request
 export const UserLoginRequest: Sync = ({ request, username, password }) => ({
   when: actions(
-    [Requesting.request, { path: "/auth/login", username, password }, {
-      request,
-    }],
+    [Requesting.request, {
+      path: "/UserAuthentication/login", // Corrected path
+      username,
+      password,
+    }, { request }],
   ),
   then: actions(
-    [UserAuthentification.login, { username, password }],
+    [UserAuthentication.login, { username, password }], // Corrected concept name
   ),
 });
 
 // Sync for responding to successful user login
 export const UserLoginResponse: Sync = ({ request, token }) => ({
   when: actions(
-    [Requesting.request, { path: "/auth/login" }, { request }],
-    [UserAuthentification.login, {}, { token }],
+    [Requesting.request, { path: "/UserAuthentication/login" }, { request }], // Corrected path
+    [UserAuthentication.login, {}, { token }], // Corrected concept name
   ),
   then: actions(
     [Requesting.respond, { request, token }],
@@ -64,8 +72,8 @@ export const UserLoginResponse: Sync = ({ request, token }) => ({
 // Sync for responding to failed user login
 export const UserLoginErrorResponse: Sync = ({ request, error }) => ({
   when: actions(
-    [Requesting.request, { path: "/auth/login" }, { request }],
-    [UserAuthentification.login, {}, { error }],
+    [Requesting.request, { path: "/UserAuthentication/login" }, { request }], // Corrected path
+    [UserAuthentication.login, {}, { error }], // Corrected concept name
   ),
   then: actions(
     [Requesting.respond, { request, error }],
@@ -75,18 +83,20 @@ export const UserLoginErrorResponse: Sync = ({ request, error }) => ({
 // Sync for handling user logout request
 export const UserLogoutRequest: Sync = ({ request, token }) => ({
   when: actions(
-    [Requesting.request, { path: "/auth/logout", token }, { request }],
+    [Requesting.request, { path: "/UserAuthentication/logout", token }, { // Corrected path
+      request,
+    }],
   ),
   then: actions(
-    [UserAuthentification.logout, { token }],
+    [UserAuthentication.logout, { token }], // Corrected concept name
   ),
 });
 
 // Sync for responding to successful user logout
 export const UserLogoutResponse: Sync = ({ request }) => ({
   when: actions(
-    [Requesting.request, { path: "/auth/logout" }, { request }],
-    [UserAuthentification.logout, {}, {}], // Empty result for successful logout
+    [Requesting.request, { path: "/UserAuthentication/logout" }, { request }], // Corrected path
+    [UserAuthentication.logout, {}, {}], // Corrected concept name
   ),
   then: actions(
     [Requesting.respond, { request, message: "Logged out successfully." }], // Custom success message
@@ -96,8 +106,8 @@ export const UserLogoutResponse: Sync = ({ request }) => ({
 // Sync for responding to failed user logout
 export const UserLogoutErrorResponse: Sync = ({ request, error }) => ({
   when: actions(
-    [Requesting.request, { path: "/auth/logout" }, { request }],
-    [UserAuthentification.logout, {}, { error }],
+    [Requesting.request, { path: "/UserAuthentication/logout" }, { request }], // Corrected path
+    [UserAuthentication.logout, {}, { error }], // Corrected concept name
   ),
   then: actions(
     [Requesting.respond, { request, error }],
@@ -105,14 +115,12 @@ export const UserLogoutErrorResponse: Sync = ({ request, error }) => ({
 });
 
 // Sync for handling requests where a session token was provided but verification failed.
-// This sync will *only* respond if a session token was present in the request
-// AND UserAuthentification.verify returned an error.
 export const UnauthorizedRequest: Sync = (
   { request, session, errorMessage },
 ) => ({
   when: actions(
     [Requesting.request, { session }, { request }], // A request comes in with a 'session'
-    [UserAuthentification.verify, { token: session }, { error: errorMessage }], // And verification failed
+    [UserAuthentication.verify, { token: session }, { error: errorMessage }], // Corrected concept name
   ),
   then: actions(
     [Requesting.respond, { request, error: errorMessage }], // Respond with the bound error message.
