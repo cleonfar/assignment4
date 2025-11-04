@@ -398,7 +398,7 @@ export default class AnimalIdentityConcept {
    */
   async _getAnimal(
     { user, id }: { user: UserId; id: AnimalId },
-  ): Promise<{ animal?: AnimalDocument } | { error: string }> {
+  ): Promise<({ animal: AnimalDocument } | { error: string })[]> {
     // Precondition: an animal with `id` owned by `user` exists (implicitly checked by findOne)
     try {
       const animal = await this.animals.findOne({
@@ -406,14 +406,14 @@ export default class AnimalIdentityConcept {
         animalId: id,
       });
       if (!animal) {
-        return {
+        return [{
           error: `Animal with ID '${id}' not found for user '${user}'.`,
-        };
+        }];
       }
-      return { animal };
+      return [{ animal }];
     } catch (e) {
       console.error("Error fetching animal:", e);
-      return { error: "Failed to fetch animal due to a database error." };
+      return [{ error: "Failed to fetch animal due to a database error." }];
     }
   }
 
@@ -424,14 +424,16 @@ export default class AnimalIdentityConcept {
    */
   async _getAllAnimals(
     { user }: { user: UserId },
-  ): Promise<{ animals: AnimalDocument[] } | { error: string }> {
+  ): Promise<({ animals: AnimalDocument[] } | { error: string })[]> {
     // Precondition: true (always allowed to query all animals for a user)
     try {
       const allAnimals = await this.animals.find({ ownerId: user }).toArray();
-      return { animals: allAnimals };
+      return [{ animals: allAnimals }];
     } catch (e) {
       console.error("Error fetching all animals for user:", e);
-      return { error: "Failed to fetch all animals due to a database error." };
+      return [{
+        error: "Failed to fetch all animals due to a database error.",
+      }];
     }
   }
 }

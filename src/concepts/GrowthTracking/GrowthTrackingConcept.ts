@@ -717,9 +717,9 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
    */
   async _getAiSummary(
     { user, reportName }: { user: UserId; reportName: string },
-  ): Promise<{ summary: string } | { error: string }> {
+  ): Promise<({ summary: string } | { error: string })[]> {
     if (!user || !reportName) {
-      return { error: "User ID and Report name are required." };
+      return [{ error: "User ID and Report name are required." }];
     }
 
     const report = await this.reports.findOne({
@@ -727,18 +727,19 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
       ownerId: user,
     });
     if (!report) {
-      return {
+      return [{
         error: `Report with name '${reportName}' not found for user ${user}.`,
-      };
+      }];
     }
 
     // If a summary already exists, return it immediately
     if (report.aiGeneratedSummary !== "") {
-      return { summary: report.aiGeneratedSummary };
+      return [{ summary: report.aiGeneratedSummary }];
     }
 
     // Otherwise, generate a new summary using the action logic
-    return await this.aiSummary({ user, reportName: reportName }); // Pass user to aiSummary action
+    const r = await this.aiSummary({ user, reportName: reportName });
+    return "summary" in r ? [{ summary: r.summary }] : [{ error: r.error }];
   }
 
   /**
@@ -747,18 +748,20 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
    */
   async _getAnimalWeights(
     { user, animal }: { user: UserId; animal: Animal },
-  ): Promise<{ weightRecords: WeightRecord[] } | { error: string }> {
+  ): Promise<({ weightRecords: WeightRecord[] } | { error: string })[]> {
     if (!user || !animal) {
-      return { error: "User ID and Animal ID are required." };
+      return [{ error: "User ID and Animal ID are required." }];
     }
     const animalDoc = await this.animals.findOne({
       ownerId: user,
       animalId: animal,
     });
     if (!animalDoc) {
-      return { error: `Animal with ID ${animal} not found for user ${user}.` };
+      return [{
+        error: `Animal with ID ${animal} not found for user ${user}.`,
+      }];
     }
-    return { weightRecords: animalDoc.weightRecords };
+    return [{ weightRecords: animalDoc.weightRecords }];
   }
 
   /**
@@ -767,20 +770,20 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
    */
   async _getReportByName(
     { user, reportName }: { user: UserId; reportName: string },
-  ): Promise<{ report: ReportDoc } | { error: string }> {
+  ): Promise<({ report: ReportDoc } | { error: string })[]> {
     if (!user || !reportName) {
-      return { error: "User ID and Report name are required." };
+      return [{ error: "User ID and Report name are required." }];
     }
     const report = await this.reports.findOne({
       reportName: reportName,
       ownerId: user,
     });
     if (!report) {
-      return {
+      return [{
         error: `Report with name '${reportName}' not found for user ${user}.`,
-      };
+      }];
     }
-    return { report: report };
+    return [{ report: report }];
   }
 
   /**
@@ -789,13 +792,13 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
    */
   async _listReports(
     { user }: { user: UserId },
-  ): Promise<{ reports: ReportDoc[] } | { error: string }> {
+  ): Promise<({ reports: ReportDoc[] } | { error: string })[]> {
     if (!user) {
-      return { error: "User ID is required." };
+      return [{ error: "User ID is required." }];
     }
 
     const reports = await this.reports.find({ ownerId: user }).toArray();
-    return { reports };
+    return [{ reports }];
   }
 
   /**
@@ -805,9 +808,9 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
    */
   async _getAllAnimalsWithWeightRecords(
     { user }: { user: UserId },
-  ): Promise<{ animals: Animal[] } | { error: string }> {
+  ): Promise<({ animals: Animal[] } | { error: string })[]> {
     if (!user) {
-      return { error: "User ID is required." };
+      return [{ error: "User ID is required." }];
     }
     // Find all animal documents for THIS user where the 'weightRecords' array is not empty
     const animalDocs = await this.animals.find({
@@ -820,6 +823,6 @@ ${report.results.map((r) => formatAnimalReportResult(r)).join("\n")}
       (doc as unknown as { animalId: Animal }).animalId
     );
 
-    return { animals: animals };
+    return [{ animals: animals }];
   }
 }

@@ -30,22 +30,28 @@ const viewCompositionAdapter = async (
   { user, herdName }: { user: ID; herdName: string },
 ): Promise<({ animals: unknown[] } | { error: string })[]> => {
   const result = await HerdGrouping._viewComposition({ user, herdName });
-  if ("error" in result) return [{ error: result.error }];
-  return [{ animals: result.animals }];
+  if (!Array.isArray(result)) return [];
+  return result.map((x) =>
+    (x && Object.prototype.hasOwnProperty.call(x, "animals"))
+      ? { animals: (x as { animals: unknown[] }).animals }
+      : { error: (x as { error: string }).error }
+  );
 };
 
 const listActiveHerdsAdapter = async (
   { user }: { user: ID },
 ): Promise<{ herds: unknown[] }[]> => {
   const result = await HerdGrouping._listActiveHerds({ user });
-  return [{ herds: result.herds }];
+  if (!Array.isArray(result)) return [];
+  return result.map((x) => ({ herds: (x as { herds: unknown[] }).herds }));
 };
 
 const listArchivedHerdsAdapter = async (
   { user }: { user: ID },
 ): Promise<{ herds: unknown[] }[]> => {
   const result = await HerdGrouping._listArchivedHerds({ user });
-  return [{ herds: result.herds }];
+  if (!Array.isArray(result)) return [];
+  return result.map((x) => ({ herds: (x as { herds: unknown[] }).herds }));
 };
 
 // =====================================================================

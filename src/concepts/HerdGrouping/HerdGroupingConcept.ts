@@ -610,14 +610,14 @@ export default class HerdGroupingConcept {
    */
   async _viewComposition(
     { user, herdName }: { user: User; herdName: string },
-  ): Promise<{ animals: Animal[] } | { error: string }> {
+  ): Promise<({ animals: Animal[] } | { error: string })[]> {
     const herd = await this.groups.findOne({ userId: user, name: herdName });
 
     if (!herd) {
-      return { error: `Herd '${herdName}' not found for user '${user}'.` };
+      return [{ error: `Herd '${herdName}' not found for user '${user}'.` }];
     }
 
-    return { animals: herd.members };
+    return [{ animals: herd.members }];
   }
 
   /**
@@ -629,14 +629,14 @@ export default class HerdGroupingConcept {
   ): Promise<
     {
       herds: Array<{ name: string; description?: string; isArchived: boolean }>;
-    }
+    }[]
   > {
     // List herds, filtered by userId and isArchived status
     const herds = await this.groups.find(
       { userId: user, isArchived: false },
       { projection: { _id: 0, name: 1, description: 1, isArchived: 1 } },
     ).toArray();
-    return { herds: herds };
+    return [{ herds: herds }];
   }
 
   /**
@@ -648,13 +648,13 @@ export default class HerdGroupingConcept {
   ): Promise<
     {
       herds: Array<{ name: string; description?: string; isArchived: boolean }>;
-    }
+    }[]
   > {
     // List herds, filtered by userId and isArchived status
     const herds = await this.groups.find(
       { userId: user, isArchived: true },
       { projection: { _id: 0, name: 1, description: 1, isArchived: 1 } },
     ).toArray();
-    return { herds: herds };
+    return [{ herds: herds }];
   }
 }

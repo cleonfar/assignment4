@@ -1183,7 +1183,8 @@ const getAiSummaryAdapter = async (
   { user, reportName }: { user: ID; reportName: string },
 ): Promise<({ summary: string } | { error: string })[]> => {
   const r = await GrowthTracking._getAiSummary({ user, reportName });
-  return "summary" in r ? [{ summary: r.summary }] : [{ error: r.error }];
+  // Concept now returns an array of frames; pass through
+  return Array.isArray(r) ? r : [];
 };
 
 export const GetAiSummary_Call_Concept: Sync = (
@@ -1330,18 +1331,26 @@ const getAnimalWeightsAdapter = async (
     }`,
   );
   const r = await GrowthTracking._getAnimalWeights({ user, animal });
-  if ("weightRecords" in r) {
+  // r is an array; log based on first element
+  const first = Array.isArray(r) && r[0]
+    ? r[0] as
+      | { weightRecords: unknown[] }
+      | { error: string }
+    : undefined;
+  if (first && "weightRecords" in first) {
     console.debug(
       `[growth.sync] getAnimalWeightsAdapter: ok weightRecords.length=${
-        Array.isArray(r.weightRecords) ? r.weightRecords.length : "(not array)"
+        Array.isArray(first.weightRecords)
+          ? first.weightRecords.length
+          : "(not array)"
       }`,
     );
   } else {
-    console.warn("[growth.sync] getAnimalWeightsAdapter: error", r.error);
+    if (first && "error" in first) {
+      console.warn("[growth.sync] getAnimalWeightsAdapter: error", first.error);
+    }
   }
-  return "weightRecords" in r
-    ? [{ weightRecords: r.weightRecords }]
-    : [{ error: r.error }];
+  return Array.isArray(r) ? r : [];
 };
 
 export const GetAnimalWeights_Call_Concept: Sync = (
@@ -1492,7 +1501,7 @@ const getReportByNameAdapter = async (
   { user, reportName }: { user: ID; reportName: string },
 ): Promise<({ report: unknown } | { error: string })[]> => {
   const r = await GrowthTracking._getReportByName({ user, reportName });
-  return "report" in r ? [{ report: r.report }] : [{ error: r.error }];
+  return Array.isArray(r) ? r : [];
 };
 
 export const GetReportByName_Call_Concept: Sync = (
@@ -1634,7 +1643,7 @@ const listReportsAdapter = async (
   { user }: { user: ID },
 ): Promise<({ reports: unknown[] } | { error: string })[]> => {
   const r = await GrowthTracking._listReports({ user });
-  return "reports" in r ? [{ reports: r.reports }] : [{ error: r.error }];
+  return Array.isArray(r) ? r : [];
 };
 
 export const ListReports_Call_Concept: Sync = (
@@ -1754,7 +1763,7 @@ const getAllAnimalsWithWeightsAdapter = async (
   { user }: { user: ID },
 ): Promise<({ animals: ID[] } | { error: string })[]> => {
   const r = await GrowthTracking._getAllAnimalsWithWeightRecords({ user });
-  return "animals" in r ? [{ animals: r.animals }] : [{ error: r.error }];
+  return Array.isArray(r) ? r : [];
 };
 
 // Body wrappers to avoid nested symbol substitution issues in Requesting.respond

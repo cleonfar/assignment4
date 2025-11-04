@@ -114,9 +114,12 @@ const rt_viewReportAdapter = async (
     user: String(user),
     reportName,
   });
-  if (r.results !== undefined) return [{ results: r.results }];
-  if (r.error !== undefined) return [{ error: r.error }];
-  return [{ error: "Unknown _viewReport response" }];
+  if (!Array.isArray(r)) return [];
+  return r.map((x) =>
+    (x && Object.prototype.hasOwnProperty.call(x, "results"))
+      ? { results: (x as { results: string[] }).results }
+      : { error: (x as { error: string }).error }
+  );
 };
 
 // _aiSummary
@@ -127,9 +130,12 @@ const rt_aiSummaryAdapter = async (
     user: String(user),
     reportName,
   });
-  if (r.summary !== undefined) return [{ summary: r.summary }];
-  if (r.error !== undefined) return [{ error: r.error }];
-  return [{ error: "Unknown _aiSummary response" }];
+  if (!Array.isArray(r)) return [];
+  return r.map((x) =>
+    (x && Object.prototype.hasOwnProperty.call(x, "summary"))
+      ? { summary: (x as { summary: string }).summary }
+      : { error: (x as { error: string }).error }
+  );
 };
 
 // _listMothers
@@ -139,9 +145,12 @@ const rt_listMothersAdapter = async (
   const r = await ReproductionTracking._listMothers({
     user: String(user),
   });
-  if (r.mother !== undefined) return [{ mother: r.mother as RT_Mother[] }];
-  if (r.error !== undefined) return [{ error: r.error }];
-  return [{ error: "Unknown _listMothers response" }];
+  if (!Array.isArray(r)) return [];
+  return r.map((x) =>
+    (x && Object.prototype.hasOwnProperty.call(x, "mother"))
+      ? { mother: (x as { mother: RT_Mother[] }).mother }
+      : { error: (x as { error: string }).error }
+  );
 };
 
 // _listLittersByMother
@@ -152,9 +161,12 @@ const rt_listLittersByMotherAdapter = async (
     user: String(user),
     motherId,
   });
-  if (r.litter !== undefined) return [{ litter: r.litter as RT_Litter[] }];
-  if (r.error !== undefined) return [{ error: r.error }];
-  return [{ error: "Unknown _listLittersByMother response" }];
+  if (!Array.isArray(r)) return [];
+  return r.map((x) =>
+    (x && Object.prototype.hasOwnProperty.call(x, "litter"))
+      ? { litter: (x as { litter: RT_Litter[] }).litter }
+      : { error: (x as { error: string }).error }
+  );
 };
 
 // _listOffspringByLitter
@@ -165,11 +177,12 @@ const rt_listOffspringByLitterAdapter = async (
     user: String(user),
     litterId,
   });
-  if (r.offspring !== undefined) {
-    return [{ offspring: r.offspring as RT_Offspring[] }];
-  }
-  if (r.error !== undefined) return [{ error: r.error }];
-  return [{ error: "Unknown _listOffspringByLitter response" }];
+  if (!Array.isArray(r)) return [];
+  return r.map((x) =>
+    (x && Object.prototype.hasOwnProperty.call(x, "offspring"))
+      ? { offspring: (x as { offspring: RT_Offspring[] }).offspring }
+      : { error: (x as { error: string }).error }
+  );
 };
 
 // _listReports
@@ -177,9 +190,12 @@ const rt_listReportsAdapter = async (
   { user }: { user: ID },
 ): Promise<({ report: RT_Report[] } | { error: string })[]> => {
   const r = await ReproductionTracking._listReports({ user: String(user) });
-  if (r.report !== undefined) return [{ report: r.report as RT_Report[] }];
-  if (r.error !== undefined) return [{ error: r.error }];
-  return [{ error: "Unknown _listReports response" }];
+  if (!Array.isArray(r)) return [];
+  return r.map((x) =>
+    (x && Object.prototype.hasOwnProperty.call(x, "report"))
+      ? { report: (x as { report: RT_Report[] }).report }
+      : { error: (x as { error: string }).error }
+  );
 };
 
 // Body wrappers to mirror growth.sync.ts response style and avoid nested symbol substitution

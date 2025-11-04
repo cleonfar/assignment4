@@ -1088,17 +1088,17 @@ export default class ReproductionTrackingConcept {
   }: {
     user: string;
     reportName: string;
-  }): Promise<{ results?: string[]; error?: string }> {
+  }): Promise<({ results?: string[]; error?: string })[]> {
     const report = await this.reports.findOne({
       ownerId: user as UserId,
       name: reportName as ReportName,
     });
     if (!report) {
-      return {
+      return [{
         error: `Report with name '${reportName}' not found for user '${user}'.`,
-      };
+      }];
     }
-    return { results: report.results };
+    return [{ results: report.results }];
   }
 
   /**
@@ -1248,20 +1248,20 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
   }: {
     user: string;
     reportName: string;
-  }): Promise<{ summary?: string; error?: string }> {
+  }): Promise<({ summary?: string; error?: string })[]> {
     const report = await this.reports.findOne({
       ownerId: user as UserId,
       name: reportName as ReportName,
     });
     if (!report) {
-      return {
+      return [{
         error: `Report with name '${reportName}' not found for user '${user}'.`,
-      };
+      }];
     }
 
     // New: If a summary already exists, return it immediately to avoid redundant AI calls.
     if (report.summary !== "") {
-      return { summary: report.summary };
+      return [{ summary: report.summary }];
     }
 
     // Otherwise, generate a new summary
@@ -1274,7 +1274,7 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
         { $set: { summary: generatedSummary } },
       );
 
-      return { summary: generatedSummary };
+      return [{ summary: generatedSummary }];
     } catch (llmError: unknown) {
       console.error(
         `Error generating AI summary for user '${user}' report '${reportName}':`,
@@ -1284,10 +1284,10 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
         llmError && typeof llmError === "object" && "message" in llmError
           ? String((llmError as { message?: unknown }).message)
           : "Unknown LLM error";
-      return {
+      return [{
         error:
           `Failed to generate AI summary for user '${user}' report '${reportName}': ${message}`,
-      };
+      }];
     }
   }
 
@@ -1359,7 +1359,7 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
     user,
   }: {
     user: string;
-  }): Promise<{ mother?: Mother[]; error?: string }> {
+  }): Promise<({ mother?: Mother[]; error?: string })[]> {
     try {
       const mothers = await this.mothers.find({ ownerId: user as UserId })
         .project({
@@ -1371,7 +1371,7 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
         })
         .toArray();
       // Ensure we return an array of objects matching the Mother interface structure
-      return {
+      return [{
         mother: mothers.map((m) => ({
           _id: m._id,
           ownerId: m.ownerId,
@@ -1379,14 +1379,14 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
           notes: m.notes,
           nextLitterNumber: m.nextLitterNumber,
         })),
-      };
+      }];
     } catch (e: unknown) {
       const message = e && typeof e === "object" && "message" in e
         ? String((e as { message?: unknown }).message)
         : "Unknown error";
-      return {
+      return [{
         error: `Failed to list mothers for user '${user}': ${message}`,
-      };
+      }];
     }
   }
 
@@ -1406,16 +1406,16 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
   }: {
     user: string;
     motherId: string;
-  }): Promise<{ litter?: Litter[]; error?: string }> {
+  }): Promise<({ litter?: Litter[]; error?: string })[]> {
     // Check requires: motherId exists for this user
     const existingMother = await this.mothers.findOne({
       externalId: motherId as ID,
       ownerId: user as UserId,
     });
     if (!existingMother) {
-      return {
+      return [{
         error: `Mother with ID '${motherId}' not found for user '${user}'.`,
-      };
+      }];
     }
 
     try {
@@ -1424,7 +1424,7 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
         ownerId: user as UserId,
       })
         .toArray();
-      return {
+      return [{
         litter: litters.map((l) => ({
           _id: l._id,
           ownerId: l.ownerId,
@@ -1434,15 +1434,15 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
           reportedLitterSize: l.reportedLitterSize,
           notes: l.notes,
         })),
-      };
+      }];
     } catch (e: unknown) {
       const message = e && typeof e === "object" && "message" in e
         ? String((e as { message?: unknown }).message)
         : "Unknown error";
-      return {
+      return [{
         error:
           `Failed to list litters for mother '${motherId}' for user '${user}': ${message}`,
-      };
+      }];
     }
   }
 
@@ -1462,16 +1462,16 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
   }: {
     user: string;
     litterId: string;
-  }): Promise<{ offspring?: Offspring[]; error?: string }> {
+  }): Promise<({ offspring?: Offspring[]; error?: string })[]> {
     // Check requires: litterId exists for this user
     const existingLitter = await this.litters.findOne({
       _id: litterId as ID,
       ownerId: user as UserId,
     });
     if (!existingLitter) {
-      return {
+      return [{
         error: `Litter with ID '${litterId}' not found for user '${user}'.`,
-      };
+      }];
     }
 
     try {
@@ -1479,7 +1479,7 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
         litterId: litterId as ID,
         ownerId: user as UserId,
       }).toArray();
-      return {
+      return [{
         offspring: offspringList.map((o) => ({
           _id: o._id,
           ownerId: o.ownerId,
@@ -1490,15 +1490,15 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
           isAlive: o.isAlive,
           survivedTillWeaning: o.survivedTillWeaning,
         })),
-      };
+      }];
     } catch (e: unknown) {
       const message = e && typeof e === "object" && "message" in e
         ? String((e as { message?: unknown }).message)
         : "Unknown error";
-      return {
+      return [{
         error:
           `Failed to list offspring for litter '${litterId}' for user '${user}': ${message}`,
-      };
+      }];
     }
   }
 
@@ -1515,11 +1515,11 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
     user,
   }: {
     user: string;
-  }): Promise<{ report?: Report[]; error?: string }> {
+  }): Promise<({ report?: Report[]; error?: string })[]> {
     try {
       const reports = await this.reports.find({ ownerId: user as UserId })
         .toArray();
-      return {
+      return [{
         report: reports.map((r) => ({
           _id: r._id,
           ownerId: r.ownerId,
@@ -1529,12 +1529,14 @@ ${report.results.map((r, i) => `  ${i + 1}. ${r}`).join("\n")}
           results: r.results,
           summary: r.summary,
         })),
-      };
+      }];
     } catch (e: unknown) {
       const message = e && typeof e === "object" && "message" in e
         ? String((e as { message?: unknown }).message)
         : "Unknown error";
-      return { error: `Failed to list reports for user '${user}': ${message}` };
+      return [{
+        error: `Failed to list reports for user '${user}': ${message}`,
+      }];
     }
   }
 }

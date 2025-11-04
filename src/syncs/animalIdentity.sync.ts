@@ -34,15 +34,24 @@ const getAnimalAdapter = async (
   { user, id }: { user: ID; id: ID },
 ): Promise<({ animal: unknown } | { error: string })[]> => {
   const result = await AnimalIdentity._getAnimal({ user, id });
-  if ("error" in result) return [{ error: result.error }];
-  return [{ animal: result.animal }];
+  // Concept now returns an array of frames
+  if (!Array.isArray(result)) return [];
+  return result.map((x) =>
+    (x && Object.prototype.hasOwnProperty.call(x, "animal"))
+      ? { animal: (x as { animal: unknown }).animal }
+      : { error: (x as { error: string }).error }
+  );
 };
 const getAllAnimalsAdapter = async (
   { user }: { user: ID },
 ): Promise<({ animals: unknown[] } | { error: string })[]> => {
   const result = await AnimalIdentity._getAllAnimals({ user });
-  if ("error" in result) return [{ error: result.error }];
-  return [{ animals: result.animals }];
+  if (!Array.isArray(result)) return [];
+  return result.map((x) =>
+    (x && Object.prototype.hasOwnProperty.call(x, "animals"))
+      ? { animals: (x as { animals: unknown[] }).animals }
+      : { error: (x as { error: string }).error }
+  );
 };
 
 export const RegisterAnimalRequest: Sync = ({
