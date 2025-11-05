@@ -887,7 +887,7 @@ export default class ReproductionTrackingConcept {
 
     const littersCount = relevantLitters.length;
     let totalOffspringCount = 0;
-    let survivedWeaningCount = 0;
+    let survivingCountForAverages = 0;
 
     if (littersCount > 0) {
       const litterIds = relevantLitters.map((l) => l._id);
@@ -896,22 +896,45 @@ export default class ReproductionTrackingConcept {
         ownerId: user as UserId,
       }).toArray();
 
+      // Count all offspring recorded in the period
       totalOffspringCount = relevantOffspring.length;
-      survivedWeaningCount = relevantOffspring.filter((o) =>
-        o.survivedTillWeaning
+
+      // For averages, treat all unweaned offspring as surviving unless marked as dead:
+      // - Count as surviving if survivedTillWeaning is true (even if later died)
+      // - OR if currently alive (isAlive === true), regardless of weaning status
+      // - Exclude only those that are not alive AND did not survive till weaning
+      survivingCountForAverages = relevantOffspring.filter((o) =>
+        o.survivedTillWeaning === true || o.isAlive === true
       ).length;
     }
 
+    const avgOffspringPerLitter = littersCount > 0
+      ? (totalOffspringCount / littersCount)
+      : undefined;
+    const avgSurvivingPerLitter = littersCount > 0
+      ? (survivingCountForAverages / littersCount)
+      : undefined;
+
     // This string represents the "reproductive performance" for this specific target and date range.
+    const survivalPct = totalOffspringCount > 0
+      ? ((survivingCountForAverages / totalOffspringCount) * 100).toFixed(2) +
+        "%"
+      : "N/A";
+
     const newPerformanceEntry =
       `Performance for ${target} (${start.toDateString()} to ${end.toDateString()}): ` +
       `Litters: ${littersCount}, Offspring: ${totalOffspringCount}, ` +
-      `Weaning Survival: ${
-        totalOffspringCount > 0
-          ? ((survivedWeaningCount / totalOffspringCount) * 100).toFixed(2) +
-            "%"
+      `Avg Offspring/Litter: ${
+        avgOffspringPerLitter !== undefined
+          ? avgOffspringPerLitter.toFixed(2)
           : "N/A"
-      }`;
+      }, ` +
+      `Avg Surviving/Litter: ${
+        avgSurvivingPerLitter !== undefined
+          ? avgSurvivingPerLitter.toFixed(2)
+          : "N/A"
+      }, ` +
+      `Survival: ${survivalPct}`;
     // --- End: Actual report generation logic ---
 
     const existingReport = await this.reports.findOne({
@@ -1058,7 +1081,8 @@ export default class ReproductionTrackingConcept {
   async deleteReport(
     { user, reportName }: { user: string; reportName: string },
   ): Promise<Empty | { error: string }> {
-    const result = await this.reports.deleteOne({
+    // Use deleteMany to ensure all duplicates (if any) are removed for this user/name
+    const result = await this.reports.deleteMany({
       ownerId: user as UserId,
       name: reportName as ReportName,
     });
@@ -1086,7 +1110,7 @@ export default class ReproductionTrackingConcept {
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
 
     const fullPrompt =
-      `You are an expert livestock analyst. Given the following report, respond ONLY with valid JSON in this exact format:
+      `You are an expert livestock analyst. Given the following report, respond ONLY with valid JSON in this exact format. You will be severely penalized for any deviation from this format or inclusion of any extra text outside the JSON object.:
 {
 "highPerformers": [],
 "lowPerformers": [],
