@@ -38,50 +38,50 @@
         *   a `summary` of type `String`
 
 *   **actions**:
-    *   `addMother (motherId: String): (motherId: String)`
-        *   **requires** mother is not already in the set of mothers
+    *   `addMother (motherId: String, user: String): (motherId: String)`
+        *   **requires** mother is not already in the set of mothers for this user 
         *   **effects** mother is added to the set of mothers
 
-    *   `removeMother (motherId: String): (motherId: String)`
-        *   **requires** a mother with this ID is in the set of mothers
+    *   `removeMother (motherId: String, user: String): (motherId: String)`
+        *   **requires** a mother with this ID is in the set of mothers for this user 
         *   **effects** removes this mother from the set of mothers. (Associated litters and offspring will have dangling `motherId` references unless syncs are used for cascade deletion).
 
-    *   `recordLitter (motherId: String, fatherId: String?, birthDate: Date, reportedLitterSize: Number, notes: String?): (litterID: String)`
-        *   **requires** motherId exists. No litter with same `motherId`, `fatherId`, `birthDate` already exists (to prevent exact duplicates).
+    *   `recordLitter (motherId: String, fatherId: String?, birthDate: Date, reportedLitterSize: Number, notes: String?, user: String): (litterID: String)`
+        *   **requires** motherId exists for this user . No litter with same `motherId`, `fatherId`, `birthDate` already exists (to prevent exact duplicates).
         *   **effects** creates a new litter record with the provided information. Also adds the mother to the set of mothers if she isn't there already.
 
-    *   `updateLitter (litterId: String, motherId: String?, fatherId: String?, birthDate: Date?, reportedLitterSize: Number?, notes: String?): (litterID: String)`
-        *   **requires** `litterId` exists
+    *   `updateLitter (litterId: String, motherId: String?, fatherId: String?, birthDate: Date?, reportedLitterSize: Number?, notes: String?, user: String): (litterID: String)`
+        *   **requires** `litterId` exists for this user 
         *   **effects** Updates any given information about the litter. If `motherId` is changed, ensures the new mother exists.
 
-    *   `recordOffspring (litterId: String, offspringId: String, sex: Enum [male, female, neutered], notes: String?): (offspringID: String)`
-        *   **requires** `litterId` exists and `offspringId` does not exist.
+    *   `recordOffspring (litterId: String, offspringId: String, sex: Enum [male, female, neutered], notes: String?, user: String): (offspringID: String)`
+        *   **requires** `litterId` exists for this user  and `offspringId` does not exist for this user.
         *   **effects** creates an individual offspring record linked to the specified litter.
 
-    *   `updateOffspring (offspringId: String, litterId: String?, sex: Enum?, notes: String?): (offspringID: String)`
-        *   **requires** `offspringId` exists.
+    *   `updateOffspring (offspringId: String, litterId: String?, sex: Enum?, notes: String?, user: String): (offspringID: String)`
+        *   **requires** `offspringId` exists for this user.
         *   **effects** Updates any given information about the offspring. If `litterId` is changed, ensures the new litter exists.
 
-    *   `recordWeaning (offspringId: String): (offspringID: String)`
-        *   **requires** offspring is in the set of offspring and is alive
+    *   `recordWeaning (offspringId: String, user: String): (offspringID: String)`
+        *   **requires** offspring is in the set of offspring for this user and is alive
         *   **effects** Sets `survivedTillWeaning` to be true for the specified offspring
 
-    *   `recordDeath (offspringId: String): (offspringId: String)`
-        *   **requires** offspring is in the set of offspring and is currently living
+    *   `recordDeath (offspringId: String, user: String): (offspringId: String)`
+        *   **requires** offspring is in the set of offspring for this user and is currently living
         *   **effects** Sets the `isAlive` flag of this offspring to false
 
-    *   `generateReport (target: String, startDateRange: Date, endDateRange: Date, name: String): (Results: String)`
-        *   **requires** target animal is in the set of mothers
+    *   `generateReport (target: String, startDateRange: Date, endDateRange: Date, name: String, user: String): (Results: String)`
+        *   **requires** target animal is in the set of mothers for this user
         *   **effects** If no report with this name exists then generate a report on the reproductive performance of the given animal within the specified date range, otherwise add the reproductive performance of this animal to the existing report.
 
-    *   `renameReport (oldName: String, newName: String): (newName: String)`
-        *   **requires** oldName of report exists
+    *   `renameReport (oldName: String, newName: String, user: String): (newName: String)`
+        *   **requires** oldName of report exists for this user
         *   **effects** renames the specified report
 
-    *   `deleteReport (reportName: String)`
-        *   **requires** report exists
+    *   `deleteReport (reportName: String, user: String)`
+        *   **requires** report exists for this user
         *   **effects** remove the report from the system
 
-    *   `aiSummary (reportName: String): (summary: String)`
-        *   **requires** report exists
+    *   `aiSummary (reportName: String, user: String): (summary: String)`
+        *   **requires** report exists for this user
         *   **effects** The AI generates a summary of the report, highlighting key takeaways and trends shown in the report, and saves it for future viewing

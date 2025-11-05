@@ -10,3 +10,22 @@
 * A major change to the original design in the state information held by different concepts was I made the state of the reproduction tracking concept hold a lot more detailed information about the offspring, and removed some of the family information held in the animal identity concept. I chose to make this change so that the parent and offspring information was held closer to where it was interacted with. Overall I feel this was a good change, but I do think in a way it weakened the animal identity concept, to the point where while I still believe it is useful it feels less necessary than I originally anticipated.
 4. Action Changes
 * There were plenty of action changes across the concepts. None that really altered the intended way for the concept to be used, just plenty of cases where I realized during implementation that a concept needed to be able to do something I hadn’t originally considered.
+
+# Here is a link to my original concept specs  
+[text](../context/documents/originalConcepts.md/steps/_.93dd01c0.md)
+
+# Here are links to my final concept specs  
+* Animal Identity  
+[text](../context/design/concepts/AnimalIdentity/concept.md/steps/concept.9456909d.md)  
+
+* Growth Tracking  
+[text](../context/design/concepts/GrowthTracking/concept.md/steps/_.5a648e2b.md)  
+
+* Grouping  
+[text](../context/design/concepts/Group/concept.md/steps/_.0bd7ea3d.md)  
+
+* Reproduction Tracking  
+[text](<../context/design/concepts/ReproductionTracking/concept.md/steps/Updated Concept.5f64bfe7.md>)  
+
+* User Authentication  
+[text](../context/design/concepts/UserAuthentication/concept.md/steps/_.8e679b72.md)  

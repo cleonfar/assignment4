@@ -21,26 +21,30 @@
     * an optional `summary` of type `String`
 
 * **actions**  
-  * `recordWeight (animal: Animal, date: Date, weight: Number, notes: String)`  
-    * **requires** animal exists  
+  * `recordWeight (animal: ID, date: Date, weight: Number, notes: String, user: String): Empty`  
+    * **requires** animal exists for this user 
     * **effects** create a new weight record for this animal    
 
-  * `removeWeightRecord (animal: Animal, date: Date)`
-    * **requires** there is a weight record for this animal on the given date
+  * `removeWeightRecord (animal: ID, date: Date, user: String): Empty`
+    * **requires** there is a weight record for this animal for this user on the given date
     * **effects** remove the given weight record from the animal's set of weight records
 
-  * `generateReport (target: String, startDateRange: Date, endDateRange: Date, name: String): (Results: String)`
-    *   **requires** target animal is in the set of mothers
+  * `deleteAnimal (animal: ID, user: String, user: String): Empty`
+    * **requires** animal exists for the given user
+    * **effects** remove the given animal from the set of animals
+
+  * `generateReport (target: String, startDateRange: Date, endDateRange: Date, name: String, user: String): (Results: String)`
+    *   **requires** target animal is in the set of animals
     *   **effects** If no report with this name exists then generate a report on the growth performance of the given animal within the specified date range, otherwise add the growth performance of this animal to the existing report. The report should include each recorded weight of each animal as well as their average daily rate of gain over each time period.
 
-  * `renameReport (oldName: String, newName: String): (newName: String)`
-    *   **requires** oldName of report exists
+  * `renameReport (oldName: String, newName: String, user: String): (newName: String)`
+    *   **requires** oldName of report exists for this user 
     *   **effects** renames the specified report
 
-  * `deleteReport (reportName: String)`
-    *   **requires** report exists
+  * `deleteReport (reportName: String, user: String)`
+    *   **requires** report exists for this user 
     *   **effects** remove the report from the system
 
-  * `aiSummary (reportName: String): (summary: String)`
-    *   **requires** report exists
+  * `aiSummary (reportName: String, user: String): (summary: String)`
+    *   **requires** report exists for this user 
     *   **effects** The AI generates a summary of the report, highlighting key takeaways and trends shown in the report, and saves it for future viewing

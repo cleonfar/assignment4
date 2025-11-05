@@ -15,26 +15,30 @@
     * an optional `birthDate` of type `Date`  
 
 * **actions**  
-  * `registerAnimal (id: ID, species: String, sex: Enum, birthDate: Date, breed?: String, mother?: ID, father?: ID, notes?: String): (animal: Animal)`  
-    * **requires** No animal with this ID is in the set of Animals
+  * `registerAnimal (id: ID, species: String, sex: Enum, birthDate: Date, breed?: String, mother?: ID, father?: ID, notes?: String, user: String): (animal: Animal)`  
+    * **requires** No animal with this ID and this user is in the set of Animals
     * **effects** create a new animal with given attributes, status set to alive  
 
-  * `updateStatus (id: ID, status: Enum, notes: String)`  
-    * **requires** animal exists  
+  * `updateStatus (id: ID, status: Enum, notes: String, user: String), Empty`  
+    * **requires** animal exists for the given user  
     * **effects** set the animal’s status to the new value and record optional notes  
 
-  * `editDetails (id: ID, species: String, breed: String, birthDate: Date, sex: Enum)`  
-    * **requires** animal exists  
+  * `editDetails (id: ID, species: String, breed: String, birthDate: Date, sex: Enum, user: String): Empty`  
+    * **requires** animal exists for the given user  
     * **effects** update the animal’s identifying attributes  
   
-  * `markAsTransferred (id: ID, date: Date, recipientNotes?: String): Empty`  
-    * **requires** animal exists, animal's status is alive  
+  * `markAsTransferred (id: ID, date: Date, recipientNotes?: String, user: String): Empty`  
+    * **requires** animal exists for the given user, animal's status is alive  
     * **effects** sets the animal’s status to 'transferred', and records the date and recipient notes in notes.  
 
-  * `markAsDeceased (id: ID, date: Date, cause?: String): Empty`  
-    * **requires** animal exists, animal's status is alive  
+  * `markAsDeceased (id: ID, date: Date, cause?: String, user: String): Empty`  
+    * **requires** animal exists for the given user, animal's status is alive  
     * **effects** sets the animal’s status to 'deceased', and records the date and cause in notes.  
 
-  * `markAsSold (id: ID, date: Date, buyerNotes?: String): Empty`  
-    * **requires** animal exists, animal's status is alive  
+  * `markAsSold (id: ID, date: Date, buyerNotes?: String, user: String): Empty`  
+    * **requires** animal exists for the given user, animal's status is alive  
     * **effects** sets the animal’s status to 'sold', and records the date and buyer notes in notes.  
+
+  * `removeAnimal (id: ID, user: String): Empty`
+    * **requires** animal exists for the given user
+    * **effects** removes the animal from the set of animals
