@@ -43,7 +43,7 @@ interface Litter {
   motherId: MotherId; // Link to the mother via her external (user-provided) ID.
   fatherId: ID; // Link to the father of this litter, or UNKNOWN_FATHER_ID.
   birthDate: Date; // The birth date of the litter.
-  reportedLitterSize: number; // The reported number of offspring in the litter.
+  reportedLitterSize: number; // Auto-maintained count of offspring in this litter (starts at 0, increments/decrements automatically)
   notes: string; // Notes about the litter. Stored as "" if not provided.
 }
 
@@ -119,122 +119,15 @@ export default class ReproductionTrackingConcept {
     return value instanceof Date ? value : new Date(value);
   }
 
-  // --- Cycle detection utilities (user-scoped DAG of parentage) ---
-  // We model a graph where nodes are animal external IDs (mothers and offspring share the same ID namespace),
-  // and edges go from a parent (motherId/fatherId) to each offspring.externalId produced in a litter.
-  // UNKNOWN_FATHER_ID is skipped.
-
-  // Build a parent->children adjacency map for a user
-  private async _buildParentToChildrenMap(
-    user: UserId,
-  ): Promise<Map<ID, Set<ID>>> {
-    const map = new Map<ID, Set<ID>>();
-
-    // Fetch all litters for this user (parents live here)
-    const litters = await this.litters.find({ ownerId: user }).project({
-      _id: 1,
-      motherId: 1,
-      fatherId: 1,
-    }).toArray();
-    if (litters.length === 0) return map;
-
-    // Fetch all offspring for this user and group by litterId
-    const offspring = await this.offspring.find({ ownerId: user }).project({
-      litterId: 1,
-      externalId: 1,
-    }).toArray();
-    const byLitter = new Map<ID, ID[]>();
-    for (const o of offspring) {
-      const lid = o.litterId as ID;
-      const arr = byLitter.get(lid) ?? [];
-      arr.push(o.externalId as ID);
-      byLitter.set(lid, arr);
-    }
-
-    // Build edges: motherId -> child, fatherId (if not UNKNOWN) -> child
-    for (const l of litters) {
-      const children = byLitter.get(l._id as ID) ?? [];
-      const parents: ID[] = [l.motherId as ID];
-      if (l.fatherId && l.fatherId !== UNKNOWN_FATHER_ID) {
-        parents.push(l.fatherId as ID);
-      }
-      for (const p of parents) {
-        if (!map.has(p)) map.set(p, new Set<ID>());
-        const set = map.get(p)!;
-        for (const c of children) set.add(c);
-      }
-    }
-
-    return map;
+  // Normalize any Date to a date-only at UTC midnight (00:00:00.000Z)
+  private _normalizeToUTCDateOnly(date: Date): Date {
+    const y = date.getUTCFullYear();
+    const m = date.getUTCMonth();
+    const d = date.getUTCDate();
+    return new Date(Date.UTC(y, m, d, 0, 0, 0, 0));
   }
 
-  // Determine if `start` is an ancestor of `target` using the computed map
-  private _isAncestor(map: Map<ID, Set<ID>>, start: ID, target: ID): boolean {
-    if (start === target) return true; // Treat identity as ancestor for immediate self-loop detection
-    const seen = new Set<ID>();
-    const queue: ID[] = [];
-    queue.push(start);
-    seen.add(start);
-    while (queue.length > 0) {
-      const cur = queue.shift()!;
-      const children = map.get(cur);
-      if (!children) continue;
-      for (const ch of children) {
-        if (ch === target) return true;
-        if (!seen.has(ch)) {
-          seen.add(ch);
-          queue.push(ch);
-        }
-      }
-    }
-    return false;
-  }
-
-  // Check whether adding edges parent->child for the given parents would create a cycle
-  private async _wouldCreateCycleOnAddChild(
-    user: UserId,
-    child: ID,
-    parents: ID[],
-  ): Promise<boolean> {
-    // Immediate self-loop
-    if (parents.some((p) => p === child)) return true;
-    const map = await this._buildParentToChildrenMap(user);
-    // If child is already an ancestor of any parent, adding parent->child closes a cycle
-    for (const p of parents) {
-      if (p === UNKNOWN_FATHER_ID) continue;
-      if (this._isAncestor(map, child, p)) return true;
-    }
-    return false;
-  }
-
-  // Check cycle when re-linking an existing child to new parents (updateOffspring: change litter and/or rename externalId)
-  private async _wouldCreateCycleOnRelinkChild(
-    user: UserId,
-    childOldId: ID,
-    oldParentIds: ID[] | undefined,
-    childNewId: ID,
-    newParentIds: ID[],
-  ): Promise<boolean> {
-    // If any new parent equals new child -> self-loop
-    if (newParentIds.some((p) => p === childNewId)) return true;
-    const map = await this._buildParentToChildrenMap(user);
-
-    // Remove edges from old parents to old child in the hypothetical new graph
-    if (oldParentIds && oldParentIds.length > 0) {
-      for (const op of oldParentIds) {
-        if (op === UNKNOWN_FATHER_ID) continue;
-        const set = map.get(op);
-        if (set) set.delete(childOldId);
-      }
-    }
-
-    // Now check if new child is already ancestor of any new parent in this adjusted graph
-    for (const np of newParentIds) {
-      if (np === UNKNOWN_FATHER_ID) continue;
-      if (this._isAncestor(map, childNewId, np)) return true;
-    }
-    return false;
-  }
+  // (cycle detection removed)
 
   /**
    * **action** `addMother (user: String, motherId: String): (motherId: String)`
@@ -342,7 +235,7 @@ export default class ReproductionTrackingConcept {
   }
 
   /**
-   * **action** `recordLitter (user: String, motherId: String, fatherId: String?, birthDate: Date, reportedLitterSize: Number, notes: String?): (litterID: String)`
+   * **action** `recordLitter (user: String, motherId: String, fatherId: String?, birthDate: Date, notes: String?): (litterID: String)`
    *
    * **requires** motherId exists for the given `user`. The generated litter ID (motherId-sequentialNumber) does not already exist for the given `user`.
    * **effects** Creates a new litter record with the provided information, assigning a sequential ID unique to the mother and user.
@@ -353,7 +246,7 @@ export default class ReproductionTrackingConcept {
    * @param {string} args.motherId - The ID of the mother.
    * @param {string} [args.fatherId] - Optional ID of the father.
    * @param {Date} args.birthDate - The birth date of the litter.
-   * @param {number} args.reportedLitterSize - The reported number of offspring in the litter.
+   * Note: Litter size is now auto-maintained internally. It starts at 0 and increments/decrements as offspring are added/moved/removed.
    * @param {string} [args.notes] - Optional notes for the litter.
    * @returns {{ litterID?: LitterId; error?: string }} The ID of the new litter, or an error.
    */
@@ -362,14 +255,12 @@ export default class ReproductionTrackingConcept {
     motherId,
     fatherId,
     birthDate,
-    reportedLitterSize,
     notes,
   }: {
     user: string;
     motherId: string;
     fatherId?: string;
     birthDate: Date | string;
-    reportedLitterSize: number;
     notes?: string;
   }): Promise<{ litterID?: LitterId; error?: string }> {
     // Check if mother exists for this user by externalId. If not, add her with default nextLitterNumber: 1
@@ -420,10 +311,12 @@ export default class ReproductionTrackingConcept {
     );
 
     // Parse and validate birth date
-    const parsedBirthDate = this._toDate(birthDate);
+    let parsedBirthDate = this._toDate(birthDate);
     if (isNaN(parsedBirthDate.getTime())) {
       return { error: "Invalid birth date provided." };
     }
+    // Strip time component; store as date-only (UTC midnight). Exact time not required.
+    parsedBirthDate = this._normalizeToUTCDateOnly(parsedBirthDate);
 
     // Prevent duplicate litters for the same mother/father/date
     const duplicateCombo = await this.litters.findOne({
@@ -448,7 +341,7 @@ export default class ReproductionTrackingConcept {
       motherId: actualMotherId,
       fatherId: actualFatherId,
       birthDate: parsedBirthDate,
-      reportedLitterSize,
+      reportedLitterSize: 0, // Start at 0; will be auto-updated when offspring are added/moved/removed
       notes: notes ?? "", // Optional notes should default to an empty string if not provided
     };
     await this.litters.insertOne(newLitter);
@@ -456,7 +349,7 @@ export default class ReproductionTrackingConcept {
   }
 
   /**
-   * **action** `updateLitter (user: String, litterId: String, motherId: String?, fatherId: String?, birthDate: Date?, reportedLitterSize: Number?, notes: String?): (litterID: String)`
+   * **action** `updateLitter (user: String, litterId: String, motherId: String?, fatherId: String?, birthDate: Date?, notes: String?): (litterID: String)`
    *
    * **requires** `litterId` exists for the given `user`. `motherId` cannot be changed for an existing litter.
    * **effects** Updates any given information about the litter.
@@ -466,7 +359,6 @@ export default class ReproductionTrackingConcept {
    * @param {string} [args.motherId] - New ID of the mother (not allowed to change).
    * @param {string} [args.fatherId] - New optional ID of the father.
    * @param {Date} [args.birthDate] - New birth date.
-   * @param {number} [args.reportedLitterSize] - New reported litter size.
    * @param {string} [args.notes] - New optional notes.
    * @returns {{ litterID?: LitterId; error?: string }} The ID of the updated litter, or an error.
    */
@@ -476,7 +368,6 @@ export default class ReproductionTrackingConcept {
     motherId,
     fatherId,
     birthDate,
-    reportedLitterSize,
     notes,
   }: {
     user: string;
@@ -484,7 +375,6 @@ export default class ReproductionTrackingConcept {
     motherId?: string;
     fatherId?: string;
     birthDate?: Date | string;
-    reportedLitterSize?: number;
     notes?: string;
   }): Promise<{ litterID?: LitterId; error?: string }> {
     const existingLitter = await this.litters.findOne({
@@ -519,15 +409,15 @@ export default class ReproductionTrackingConcept {
       }
     }
     if (birthDate !== undefined) {
-      const parsed = this._toDate(birthDate);
+      let parsed = this._toDate(birthDate);
       if (isNaN(parsed.getTime())) {
         return { error: "Invalid birth date provided." };
       }
+      // Store as date-only (UTC midnight)
+      parsed = this._normalizeToUTCDateOnly(parsed);
       updateFields.birthDate = parsed;
     }
-    if (reportedLitterSize !== undefined) {
-      updateFields.reportedLitterSize = reportedLitterSize;
-    }
+    // reportedLitterSize is managed automatically and cannot be directly updated
     // Handle notes update: if explicitly provided as undefined, set to empty string.
     // If not in args, don't change it.
     if (Object.prototype.hasOwnProperty.call(arguments[0], "notes")) {
@@ -548,6 +438,55 @@ export default class ReproductionTrackingConcept {
       };
     }
     return { litterID: litterId as ID };
+  }
+
+  /**
+   * **action** `deleteLitter (user: String, litterId: String): (litterId: String)`
+   *
+   * **requires** `litterId` exists for the given `user`.
+   * **effects** Deletes the specified litter and all offspring linked to it, owned by the user.
+   * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
+   * @param {string} args.litterId - The ID of the litter to delete.
+   * @returns {{ litterId?: LitterId; error?: string }} The ID of the deleted litter, or an error.
+   */
+  async deleteLitter({
+    user,
+    litterId,
+  }: {
+    user: string;
+    litterId: string;
+  }): Promise<{ litterId?: LitterId; error?: string }> {
+    // Verify litter exists for this user
+    const existingLitter = await this.litters.findOne({
+      _id: litterId as ID,
+      ownerId: user as UserId,
+    });
+    if (!existingLitter) {
+      return {
+        error: `Litter with ID '${litterId}' not found for user '${user}'.`,
+      };
+    }
+
+    // Delete all offspring associated with this litter for this user
+    await this.offspring.deleteMany({
+      litterId: litterId as ID,
+      ownerId: user as UserId,
+    });
+
+    // Delete the litter itself
+    const deleteRes = await this.litters.deleteOne({
+      _id: litterId as ID,
+      ownerId: user as UserId,
+    });
+    if (deleteRes.deletedCount === 0) {
+      return {
+        error:
+          `Litter with ID '${litterId}' not found for user '${user}' during deletion.`,
+      };
+    }
+
+    return { litterId: litterId as ID };
   }
 
   /**
@@ -599,30 +538,6 @@ export default class ReproductionTrackingConcept {
       };
     }
 
-    // Cycle detection: adding edges parent->offspringId must not create a cycle
-    const prospectiveParents: ID[] = [existingLitter.motherId as ID];
-    if (
-      existingLitter.fatherId && existingLitter.fatherId !== UNKNOWN_FATHER_ID
-    ) {
-      prospectiveParents.push(existingLitter.fatherId as ID);
-    }
-    const cycle = await this._wouldCreateCycleOnAddChild(
-      user as UserId,
-      offspringId as ID,
-      prospectiveParents,
-    );
-    if (cycle) {
-      return {
-        error:
-          `Invalid parentage: adding offspring '${offspringId}' under mother '${existingLitter.motherId}'` +
-          (existingLitter.fatherId &&
-              existingLitter.fatherId !== UNKNOWN_FATHER_ID
-            ? ` and father '${existingLitter.fatherId}'`
-            : "") +
-          ` would create an ancestry cycle for user '${user}'.`,
-      };
-    }
-
     const newOffspring: Offspring = {
       _id: freshID(),
       ownerId: user as UserId, // Assign ownerId to the offspring
@@ -634,6 +549,11 @@ export default class ReproductionTrackingConcept {
       survivedTillWeaning: false, // Not yet weaned
     };
     await this.offspring.insertOne(newOffspring);
+    // Auto-increment litter size
+    await this.litters.updateOne(
+      { _id: litterId as ID, ownerId: user as UserId },
+      { $inc: { reportedLitterSize: 1 } },
+    );
     return { offspringID: newOffspring.externalId };
   }
 
@@ -721,20 +641,6 @@ export default class ReproductionTrackingConcept {
       updateFields.externalId = finalNewOffspringId; // extend update with externalId
     }
 
-    // Cycle detection on relink/rename
-    // Determine current litter and parents (old)
-    const currentLitter = await this.litters.findOne({
-      _id: existingOffspring.litterId as ID,
-      ownerId: user as UserId,
-    });
-    const oldParents: ID[] | undefined = currentLitter
-      ? [currentLitter.motherId as ID].concat(
-        (currentLitter.fatherId && currentLitter.fatherId !== UNKNOWN_FATHER_ID)
-          ? [currentLitter.fatherId as ID]
-          : [],
-      )
-      : undefined;
-
     // Determine target litter and parents (new)
     const targetLitterId =
       (updateFields.litterId ?? existingOffspring.litterId) as ID;
@@ -747,35 +653,6 @@ export default class ReproductionTrackingConcept {
         error: `Target litter with ID '${
           String(targetLitterId)
         }' not found for user '${user}'.`,
-      };
-    }
-    const newParents: ID[] = [targetLitter.motherId as ID];
-    if (targetLitter.fatherId && targetLitter.fatherId !== UNKNOWN_FATHER_ID) {
-      newParents.push(targetLitter.fatherId as ID);
-    }
-
-    // Quick self-loop guard on rename vs parents
-    if (newParents.includes(finalNewOffspringId as ID)) {
-      return {
-        error: `Invalid parentage: offspring ID '${
-          String(finalNewOffspringId)
-        }' matches a parent ID in litter '${String(targetLitterId)}'.`,
-      };
-    }
-
-    const relinkCycle = await this._wouldCreateCycleOnRelinkChild(
-      user as UserId,
-      existingOffspring.externalId as ID,
-      oldParents,
-      finalNewOffspringId as ID,
-      newParents,
-    );
-    if (relinkCycle) {
-      return {
-        error:
-          `Invalid parentage: updating offspring '${oldOffspringId}' would create an ancestry cycle (new ID '${
-            String(finalNewOffspringId)
-          }').`,
       };
     }
 
@@ -795,6 +672,23 @@ export default class ReproductionTrackingConcept {
         error:
           `Offspring with ID '${oldOffspringId}' not found for user '${user}' for update.`,
       };
+    }
+    // If litter changed, adjust litter sizes accordingly
+    const litterChanged = updateFields.litterId !== undefined &&
+      String(updateFields.litterId) !== String(existingOffspring.litterId);
+    if (litterChanged) {
+      const oldLitterId = existingOffspring.litterId as ID;
+      const newLitterId = updateFields.litterId as ID;
+      // Decrement old litter
+      await this.litters.updateOne(
+        { _id: oldLitterId, ownerId: user as UserId },
+        { $inc: { reportedLitterSize: -1 } },
+      );
+      // Increment new litter
+      await this.litters.updateOne(
+        { _id: newLitterId, ownerId: user as UserId },
+        { $inc: { reportedLitterSize: 1 } },
+      );
     }
     return { offspringID: finalNewOffspringId };
   }
@@ -881,6 +775,56 @@ export default class ReproductionTrackingConcept {
       { externalId: offspringId as ID, ownerId: user as UserId },
       { $set: { isAlive: false } },
     );
+    return { offspringId: offspringId as ID };
+  }
+
+  /**
+   * **action** `deleteOffspring (user: String, offspringId: String): (offspringId: String)`
+   *
+   * **requires** offspring with `offspringId` exists for `user`
+   * **effects** Deletes the specified offspring record. Decrements the parent litter's reportedLitterSize by 1.
+   * @param {object} args - The action arguments.
+   * @param {string} args.user - The ID of the user performing the action.
+   * @param {string} args.offspringId - The ID of the offspring to delete.
+   * @returns {{ offspringId?: OffspringId; error?: string }} The ID of the deleted offspring, or an error.
+   */
+  async deleteOffspring({
+    user,
+    offspringId,
+  }: {
+    user: string;
+    offspringId: string;
+  }): Promise<{ offspringId?: OffspringId; error?: string }> {
+    // Find the offspring by externalId and owner
+    const existingOffspring = await this.offspring.findOne({
+      externalId: offspringId as ID,
+      ownerId: user as UserId,
+    });
+    if (!existingOffspring) {
+      return {
+        error:
+          `Offspring with ID '${offspringId}' not found for user '${user}'.`,
+      };
+    }
+
+    // Delete the offspring
+    const deleteRes = await this.offspring.deleteOne({
+      externalId: offspringId as ID,
+      ownerId: user as UserId,
+    });
+    if (deleteRes.deletedCount === 0) {
+      return {
+        error:
+          `Offspring with ID '${offspringId}' not found for user '${user}' during deletion.`,
+      };
+    }
+
+    // Decrement the parent's litter size if the litter still exists
+    await this.litters.updateOne(
+      { _id: existingOffspring.litterId as ID, ownerId: user as UserId },
+      { $inc: { reportedLitterSize: -1 } },
+    );
+
     return { offspringId: offspringId as ID };
   }
 

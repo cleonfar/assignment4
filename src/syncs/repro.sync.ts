@@ -83,12 +83,54 @@ const dateParserAdapter = (
   { dateString }: { dateString: string },
 ): Promise<({ parsedDate: Date } | { error: string })[]> => {
   try {
-    if (!dateString) {
+    // Validate presence
+    if (dateString === undefined || dateString === null) {
       return Promise.resolve([
         { error: "Date string is required and cannot be empty." },
       ]);
     }
-    const date = new Date(dateString);
+
+    const raw = String(dateString).trim();
+    if (raw.length === 0) {
+      return Promise.resolve([
+        { error: "Date string is required and cannot be empty." },
+      ]);
+    }
+
+    // 1) UNIX epoch milliseconds (13 digits)
+    if (/^\d{13}$/.test(raw)) {
+      const d = new Date(Number(raw));
+      if (!isNaN(d.getTime())) return Promise.resolve([{ parsedDate: d }]);
+    }
+
+    // 2) UNIX epoch seconds (10 digits)
+    if (/^\d{10}$/.test(raw)) {
+      const d = new Date(Number(raw) * 1000);
+      if (!isNaN(d.getTime())) return Promise.resolve([{ parsedDate: d }]);
+    }
+
+    // 3) Date-only YYYY-MM-DD -> interpret as UTC midnight to avoid TZ drift
+    const ymdDash = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+    if (ymdDash) {
+      const y = Number(ymdDash[1]);
+      const m = Number(ymdDash[2]);
+      const d = Number(ymdDash[3]);
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      if (!isNaN(dt.getTime())) return Promise.resolve([{ parsedDate: dt }]);
+    }
+
+    // 4) Date-only YYYY/MM/DD -> interpret as UTC midnight
+    const ymdSlash = /^(\d{4})\/(\d{2})\/(\d{2})$/.exec(raw);
+    if (ymdSlash) {
+      const y = Number(ymdSlash[1]);
+      const m = Number(ymdSlash[2]);
+      const d = Number(ymdSlash[3]);
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      if (!isNaN(dt.getTime())) return Promise.resolve([{ parsedDate: dt }]);
+    }
+
+    // 5) Fallback to native ISO/timestamp parsing
+    const date = new Date(raw);
     if (isNaN(date.getTime())) {
       return Promise.resolve([
         { error: `Invalid date format: '${dateString}'` },
@@ -391,15 +433,15 @@ export const RemoveMother_Respond_Concept_Error: Sync = (
 });
 
 // --- recordLitter ---
-export const RecordLitter_Call_Concept: Sync = (
+// Record Litter (with fatherId provided)
+export const RecordLitter_Call_Concept_WithFather: Sync = (
   {
     request,
     token,
     authUser,
     motherId,
-    fatherId,
     birthDateStr,
-    reportedLitterSize,
+    fatherId,
     notes,
     parsedDate,
   },
@@ -409,9 +451,8 @@ export const RecordLitter_Call_Concept: Sync = (
     {
       path: "/ReproductionTracking/recordLitter",
       motherId,
-      fatherId,
+      fatherId, // explicitly present in request
       birthDate: birthDateStr,
-      reportedLitterSize,
       notes,
       token,
     },
@@ -426,18 +467,52 @@ export const RecordLitter_Call_Concept: Sync = (
       { dateString: birthDateStr },
       { parsedDate },
     );
-    return frames.filter(($) => $[parsedDate]); // Ensure date parsing succeeded
+    return frames.filter(($) => $[parsedDate]);
   },
   then: actions([
     ReproductionTracking.recordLitter,
+    { user: authUser, motherId, fatherId, birthDate: parsedDate, notes },
+    {},
+  ]),
+});
+
+// Record Litter (without fatherId provided)
+export const RecordLitter_Call_Concept_NoFather: Sync = (
+  {
+    request,
+    token,
+    authUser,
+    motherId,
+    birthDateStr,
+    notes,
+    parsedDate,
+  },
+) => ({
+  when: actions([
+    Requesting.request,
     {
-      user: authUser,
+      path: "/ReproductionTracking/recordLitter",
       motherId,
-      fatherId,
-      birthDate: parsedDate,
-      reportedLitterSize,
+      birthDate: birthDateStr,
       notes,
+      token,
     },
+    { request },
+  ]),
+  where: async (frames) => {
+    frames = await frames.query(verifyAdapter, { token }, { user: authUser });
+    frames = frames.filter(($) => $[authUser]);
+
+    frames = await frames.query(
+      dateParserAdapter,
+      { dateString: birthDateStr },
+      { parsedDate },
+    );
+    return frames.filter(($) => $[parsedDate]);
+  },
+  then: actions([
+    ReproductionTracking.recordLitter,
+    { user: authUser, motherId, birthDate: parsedDate, notes },
     {},
   ]),
 });
@@ -537,7 +612,6 @@ export const UpdateLitter_Call_Concept: Sync = (
     motherId,
     fatherId,
     birthDateStr,
-    reportedLitterSize,
     notes,
     parsedDate,
   },
@@ -550,7 +624,6 @@ export const UpdateLitter_Call_Concept: Sync = (
       motherId, // Concept will handle rule about changing motherId
       fatherId,
       birthDate: birthDateStr,
-      reportedLitterSize,
       notes,
       token,
     },
@@ -580,7 +653,6 @@ export const UpdateLitter_Call_Concept: Sync = (
       motherId,
       fatherId,
       birthDate: parsedDate,
-      reportedLitterSize,
       notes,
     },
     {},
@@ -668,6 +740,82 @@ export const UpdateLitter_Respond_Concept_Error: Sync = (
   ]),
   and: actions([
     ReproductionTracking.updateLitter,
+    {},
+    { error: conceptError },
+  ]),
+  then: actions([
+    Requesting.respond,
+    { request, body: { error: conceptError } },
+  ]),
+});
+
+// --- deleteLitter ---
+export const DeleteLitter_Call_Concept: Sync = (
+  { request, token, authUser, litterId },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/ReproductionTracking/deleteLitter", litterId, token },
+    { request },
+  ]),
+  where: async (frames) => {
+    frames = await frames.query(verifyAdapter, { token }, { user: authUser });
+    return frames.filter(($) => $[authUser]);
+  },
+  then: actions([
+    ReproductionTracking.deleteLitter,
+    { user: authUser, litterId },
+    {},
+  ]),
+});
+
+export const DeleteLitter_Respond_Auth_Error: Sync = (
+  { request, token, authError },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/ReproductionTracking/deleteLitter", token },
+    { request },
+  ]),
+  where: async (frames) => {
+    frames = await frames.query(verifyAdapter, { token }, { error: authError });
+    return frames.filter(($) => $[authError]);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, body: { error: authError } },
+  ]),
+});
+
+export const DeleteLitter_Respond_Success: Sync = (
+  { request, litterIdOutput },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/ReproductionTracking/deleteLitter" },
+    { request },
+  ]),
+  and: actions([
+    ReproductionTracking.deleteLitter,
+    {},
+    { litterId: litterIdOutput },
+  ]),
+  then: actions([
+    Requesting.respond,
+    { request, body: { litterId: litterIdOutput } },
+  ]),
+});
+
+export const DeleteLitter_Respond_Concept_Error: Sync = (
+  { request, conceptError },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/ReproductionTracking/deleteLitter" },
+    { request },
+  ]),
+  and: actions([
+    ReproductionTracking.deleteLitter,
     {},
     { error: conceptError },
   ]),
@@ -996,6 +1144,82 @@ export const RecordDeath_Respond_Concept_Error: Sync = (
   ]),
   and: actions([
     ReproductionTracking.recordDeath,
+    {},
+    { error: conceptError },
+  ]),
+  then: actions([
+    Requesting.respond,
+    { request, body: { error: conceptError } },
+  ]),
+});
+
+// --- deleteOffspring ---
+export const DeleteOffspring_Call_Concept: Sync = (
+  { request, token, authUser, offspringId },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/ReproductionTracking/deleteOffspring", offspringId, token },
+    { request },
+  ]),
+  where: async (frames) => {
+    frames = await frames.query(verifyAdapter, { token }, { user: authUser });
+    return frames.filter(($) => $[authUser]);
+  },
+  then: actions([
+    ReproductionTracking.deleteOffspring,
+    { user: authUser, offspringId },
+    {},
+  ]),
+});
+
+export const DeleteOffspring_Respond_Auth_Error: Sync = (
+  { request, token, authError },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/ReproductionTracking/deleteOffspring", token },
+    { request },
+  ]),
+  where: async (frames) => {
+    frames = await frames.query(verifyAdapter, { token }, { error: authError });
+    return frames.filter(($) => $[authError]);
+  },
+  then: actions([
+    Requesting.respond,
+    { request, body: { error: authError } },
+  ]),
+});
+
+export const DeleteOffspring_Respond_Success: Sync = (
+  { request, offspringIdOutput },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/ReproductionTracking/deleteOffspring" },
+    { request },
+  ]),
+  and: actions([
+    ReproductionTracking.deleteOffspring,
+    {},
+    { offspringId: offspringIdOutput },
+  ]),
+  then: actions([
+    Requesting.respond,
+    { request, body: { offspringId: offspringIdOutput } },
+  ]),
+});
+
+export const DeleteOffspring_Respond_Concept_Error: Sync = (
+  { request, conceptError },
+) => ({
+  when: actions([
+    Requesting.request,
+    { path: "/ReproductionTracking/deleteOffspring" },
+    { request },
+  ]),
+  and: actions([
+    ReproductionTracking.deleteOffspring,
     {},
     { error: conceptError },
   ]),

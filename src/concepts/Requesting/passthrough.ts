@@ -101,6 +101,8 @@ export const exclusions: Array<string> = [
   "/api/ReproductionTracking/_listLittersByMother",
   "/api/ReproductionTracking/_listOffspringByLitter",
   "/api/ReproductionTracking/_listReports",
+  "/api/ReproductionTracking/deleteOffspring",
+  "/api/ReproductionTracking/deleteLitter",
   "/api/UserAuthentication/register",
   "/api/UserAuthentication/login",
   "/api/UserAuthentication/verify",
